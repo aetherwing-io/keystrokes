@@ -32,7 +32,7 @@ let msDest = null, recorder = null, recChunks = [];
 let keyTimes = [], lastKeyAt = 0, lastWasBoundary = true, wordCharIdx = 0;
 let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
-let claudeSymbolCount = 0, claudeBoundary = true, claudeWordIdx = 0;
+let claudeSymbolCount = 0, claudeBoundary = true, claudeWordIdx = 0, claudeLastNoteAt = 0;
 let lastUserMidi = 0, lastUserNoteAt = 0;
 let combo = 0, comboTier = 0, lastComboAt = 0;   // arcade typing streaks
 
@@ -326,11 +326,18 @@ function scheduleBass(chord, pos, bar, t, act) {
     default: // lofi
       if (pos === 0) bassHit(root, 0.5, t);
       if (pos === 10) bassHit(bar % 2 ? root + 7 : root, 0.38, t);
+      if (pos === 14 && bar % 2 === 1) {
+        // walk into the next chord: a quiet chromatic approach note
+        const next = bassOf(chordAt((bar + 1) * 16));
+        if (next !== root) bassHit(next > root ? next - 1 : next + 1, 0.28, t, { dur: 0.3 });
+      }
   }
 }
 function scheduleDrums(pos, bar, t, act) {
   const d = density();
   const inChorus = section === 'chorus';
+  if (bar === chorusUntilBar && pos < 8) return;   // the post-chorus breath
+  if (bar % 8 === 7 && pos >= 12 && pos % 2 === 0) snareDust(t, 0.18 + (pos - 12) * 0.04); // phrase-end fill
   switch (STYLE.drums) {
     case 'chip':
       if (pos === 0 || pos === 8) chipKick(t, 0.85);
@@ -362,11 +369,11 @@ function scheduleDrums(pos, bar, t, act) {
 /* ---------- transport / scheduler ---------- */
 function swingDelay() { return (val('swingRange', 15) / 100) * P16; }
 
-function riserFx(when, dur) {
+function riserFx(when, dur, down) {
   const src = ctx.createBufferSource(); src.buffer = engine.noiseBuf; src.loop = true;
   const hp = ctx.createBiquadFilter(); hp.type = 'highpass';
-  hp.frequency.setValueAtTime(400, when);
-  hp.frequency.exponentialRampToValueAtTime(6000, when + dur);
+  hp.frequency.setValueAtTime(down ? 6000 : 400, when);
+  hp.frequency.exponentialRampToValueAtTime(down ? 400 : 6000, when + dur);
   const g = ctx.createGain();
   g.gain.setValueAtTime(0.0001, when);
   g.gain.linearRampToValueAtTime(0.045, when + dur - 0.05);
@@ -427,6 +434,7 @@ function scheduleSlot(s) {
           voicingOf(chord).forEach((m, i) => playStabTone(m, 0.15 + 0.09 * act, t + i * 0.018));
         }
     }
+    if (bar === chorusUntilBar - 1) riserFx(t + 8 * P16, 8 * P16, true);   // the faller out of the chorus
     const delta = Math.max(0, (t - ctx.currentTime) * 1000);
     setTimeout(() => {
       setChip('chordChip', NOTE_NAMES[(chord.root + keyOff) % 12] + chord.label);
@@ -534,9 +542,22 @@ function tick() {
   for (const k of slotNotes.keys()) if (k < slot - 8) slotNotes.delete(k);
 }
 
-function anchorTransport() {
-  t0 = ctx.currentTime + 0.15;
+function anchorTransport(lead = 0.15) {
+  t0 = ctx.currentTime + lead;
   slot = 0;
+}
+function tapeStopFx() {
+  const now = ctx.currentTime + 0.02;
+  const o = ctx.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(520, now);
+  o.frequency.exponentialRampToValueAtTime(90, now + 0.45);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.05, now);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+  o.connect(g); g.connect(engine.masterFilter);
+  o.start(now); o.stop(now + 0.55);
+  engine.masterFilter.frequency.setTargetAtTime(450, now, 0.08);  // tick() reopens it
+  playScratch(now + 0.06);
 }
 function startTransport() {
   anchorTransport();
@@ -552,7 +573,12 @@ function setStyle(name) {
   setChip('comboChip', '·');
   if (started) {
     engine.buildBed();
-    if (running) anchorTransport();  // re-anchor the grid at the new tempo
+    if (running) {
+      // a real transition: tape stops, breath, tape spins up in the new groove
+      tapeStopFx();
+      anchorTransport(0.55);
+      setTimeout(() => { if (running) tapeStartFx(); }, 250);
+    }
   }
 }
 
@@ -764,7 +790,7 @@ function claudeStep(item) {
   const isLetter = ch >= 'a' && ch <= 'z';
   const isDigit = ch >= '0' && ch <= '9';
   if (!isLetter && !isDigit) {
-    if (++claudeSymbolCount % 3 === 0) { playRim(t, 0.2); pushViz(93, 2, 0.15, 'perc'); }
+    if (++claudeSymbolCount % 4 === 0) { playRim(t, 0.15); pushViz(93, 2, 0.12, 'perc'); }
     claudeBoundary = false;
     return;
   }
@@ -773,7 +799,12 @@ function claudeStep(item) {
   const wordInitial = claudeBoundary;
   claudeWordIdx = wordInitial ? 0 : claudeWordIdx + 1;
   claudeBoundary = false;
-  if (!wordInitial && tier === 0 && d < 0.5 && claudeWordIdx % 2 === 1) return;
+  // the note budget: claude is a counter-voice, not a firehose —
+  // mid-word common letters never sound, and notes keep a courteous distance
+  if (!wordInitial && tier === 0) return;
+  if (!wordInitial && d < 0.5 && claudeWordIdx % 2 === 1) return;
+  const sinceLast = performance.now() - (claudeLastNoteAt || 0);
+  if (sinceLast < 320) return;
 
   const nowMs = performance.now();
   const idleLead = lastKeyAt > 0 && nowMs - lastKeyAt > 15000;
@@ -790,10 +821,12 @@ function claudeStep(item) {
     midi = snapMidi(midi, allowedPcs(chord, tier));
   }
 
-  let vel = 0.32 + (idleLead ? 0.1 : 0);   // the lead is Claude's while you read
-  if (wordInitial) vel += 0.12;
+  let vel = 0.22 + (idleLead ? 0.1 : 0);   // quieter than the human, always
+  if (wordInitial) vel += 0.08;
+  vel *= 0.55 + 0.6 * leadLevel();         // the Lead control calms both voices
 
   playClaude(midi, vel, t);
+  claudeLastNoteAt = performance.now();
   pushViz(midi, tier, vel, 'claude');
 }
 function drainClaude() {
@@ -921,11 +954,13 @@ function handleTelemetry(msg) {
     else okTickSound();
     return;
   }
+  // verbose per-tool chatter (stamps, blips, ok-ticks) is opt-in — it was noise
+  const verbose = new URLSearchParams(location.search).has('telemverbose');
   const base = String(msg.tool || '').replace(/^mcp__.*__/, '');
   if (msg.phase === 'start') {
     if (base === 'Bash') { pendingBash++; rumbleStartedAt = performance.now(); setRumble(true); }
-    else if (base === 'Write' || base === 'Edit' || base === 'NotebookEdit') stampNotes();
-    else if (base === 'WebFetch' || base === 'WebSearch') radioBlip();
+    else if (verbose && (base === 'Write' || base === 'Edit' || base === 'NotebookEdit')) stampNotes();
+    else if (verbose && (base === 'WebFetch' || base === 'WebSearch')) radioBlip();
     return;
   }
   if (base === 'Bash') {
@@ -939,7 +974,11 @@ function handleTelemetry(msg) {
     return;
   }
   if (!msg.ok) tensionEnter(msg.f);
-  else { tensionResolve(msg.f); okTickSound(); }
+  else {
+    const hadTension = erroredFiles.size > 0;
+    tensionResolve(msg.f);
+    if (hadTension && new URLSearchParams(location.search).has('telemverbose')) okTickSound();
+  }
 }
 
 /* ---------- SSE stream (live.html only calls this) ---------- */
@@ -1052,6 +1091,12 @@ const volRange = $('volRange');
 if (volRange) volRange.addEventListener('input', () => {
   if (engine) engine.setVolume(volLevel());
 });
+const leadRange = $('leadRange');
+if (leadRange) leadRange.addEventListener('input', () => { jrnSet('lead', val('leadRange', 45)); });
+const densRange = $('densRange');
+if (densRange) densRange.addEventListener('input', () => { jrnSet('density', val('densRange', 50)); });
+const swingRange = $('swingRange');
+if (swingRange) swingRange.addEventListener('input', () => { jrnSet('swing', val('swingRange', 15)); });
 const crackleRange = $('crackleRange');
 if (crackleRange) crackleRange.addEventListener('input', () => {
   if (engine) engine.setCrackle(cracLevel());
@@ -1145,8 +1190,38 @@ let pendingAutoText = null;
   }
 })();
 
-/* ---------- circadian key: mornings bright, nights dark ---------- */
-if (keySel) {
+/* ---------- settings persistence: your tuning survives reloads ---------- */
+const SAVE_IDS = ['styleSel', 'keySel', 'mapSel', 'swingRange', 'crackleRange',
+                  'densRange', 'leadRange', 'volRange', 'drumsChk', 'claudeChk', 'telemChk'];
+function saveSettings() {
+  const o = {};
+  for (const id of SAVE_IDS) {
+    const el = $(id);
+    if (el) o[id] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  try { localStorage.setItem('ks-settings', JSON.stringify(o)); } catch { /* private mode */ }
+}
+function restoreSettings() {
+  let o = null;
+  try { o = JSON.parse(localStorage.getItem('ks-settings') || 'null'); } catch { /* fine */ }
+  if (!o) return false;
+  for (const id of SAVE_IDS) {
+    const el = $(id);
+    if (!el || o[id] === undefined) continue;
+    if (el.type === 'checkbox') el.checked = o[id];
+    else el.value = o[id];
+    el.dispatchEvent(new Event(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input'));
+  }
+  return o.keySel !== undefined;
+}
+for (const id of SAVE_IDS) {
+  const el = $(id);
+  if (el) el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', saveSettings);
+}
+const restoredKey = restoreSettings();
+
+/* ---------- circadian key: mornings bright, nights dark (until you choose) ---------- */
+if (keySel && !restoredKey) {
   const h = new Date().getHours();
   const circ = h < 5 ? 3 : h < 11 ? 0 : h < 17 ? 7 : h < 22 ? 9 : 3;
   if (circ !== 0) { keySel.value = String(circ); keyOff = circ; }

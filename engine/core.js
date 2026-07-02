@@ -221,14 +221,15 @@ export function createAudioEngine(actx, opts) {
   let bedSources = [];
   function buildBed(at) {
     const when = at ?? ctx.currentTime;
-    bedSources.forEach(s => { try { s.stop(when); } catch { /* already stopped */ } });
+    // crossfade: the old weather takes a couple of seconds to clear
+    bedSources.forEach(s => { try { s.stop(when + 2.5); } catch { /* already stopped */ } });
     bedSources = [];
     if (crackleGain) {
-      const old = crackleGain;
-      old.gain.setTargetAtTime(0.0001, when, 0.1);
+      crackleGain.gain.setTargetAtTime(0.0001, when, 0.5);
     }
     crackleGain = ctx.createGain();
-    crackleGain.gain.value = opts.getCrackle();
+    crackleGain.gain.setValueAtTime(0.0001, when);
+    crackleGain.gain.setTargetAtTime(opts.getCrackle(), when, 0.6);
     crackleGain.connect(crackleDuck);
 
     const noiseLayer = (lpHz, hpHz, gain) => {
@@ -578,7 +579,7 @@ export function createAudioEngine(actx, opts) {
   }
 
   return {
-    ctx, comp, masterGain, masterFilter, drumBus, wobble, noiseBuf,
+    ctx, comp, masterGain, masterFilter, drumBus, wobble, noiseBuf, reverbSend,
     buildBed,
     setVolume(v) { masterGain.gain.setTargetAtTime(v, ctx.currentTime, 0.1); },
     setCrackle(v) { if (crackleGain) crackleGain.gain.setTargetAtTime(v, ctx.currentTime, 0.2); },
