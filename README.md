@@ -48,6 +48,22 @@ your keys, any app          claude's characters
               live.html   (Web Audio engine in a browser tab)
 ```
 
+## Styles
+
+The Style select swaps the whole vibe — instruments, tempo, chords, drums,
+and background texture — while your keys keep steering:
+
+| Style | Lead | Groove | Bed |
+|---|---|---|---|
+| **Lofi tape** | sampled Rhodes | 76 BPM boom-bap, swung | vinyl crackle |
+| **Arcade (8-bit)** | pulse-wave chip lead | 112 BPM chip kit + chord arp | tape hiss |
+| **Night drive** | detuned saw lead | 92 BPM four-on-floor, gated snare, octave bass | tape hiss |
+| **Rainy day** | kalimba | 62 BPM near-still, chords every 2 bars, drone bass | rain |
+
+**Density** controls how busy the melody gets: it thins mid-word common
+letters first (the least informative notes) down to ghosts or rests.
+Typing into the pad auto-starts the tape — no button needed.
+
 Engine behavior worth knowing:
 
 - **Your voice** drives everything: drums and brightness follow *your*

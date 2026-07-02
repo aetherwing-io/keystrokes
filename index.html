@@ -29,15 +29,28 @@
     <span>sound <b id="soundChip">loading…</b></span>
   </div>
 
-  <textarea id="pad" spellcheck="false" autocomplete="off"
-    placeholder="Type anything — prose, code, a rant. Every key plays a note; the engine keeps it in tune. Space taps the hi-hat, punctuation cadences, backspace scratches the record."></textarea>
+  <textarea id="pad" spellcheck="false" autocomplete="off" autofocus
+    placeholder="Just start typing — prose, code, a rant. Every key plays a note; the engine keeps it in tune. Space taps the hi-hat, punctuation cadences, backspace scratches the record."></textarea>
 
   <canvas id="viz"></canvas>
 
   <div class="controls">
     <div class="ctl">
+      <label for="styleSel">Style</label>
+      <select id="styleSel">
+        <option value="lofi" selected>Lofi tape</option>
+        <option value="arcade">Arcade (8-bit)</option>
+        <option value="drive">Night drive</option>
+        <option value="rain">Rainy day</option>
+      </select>
+    </div>
+    <div class="ctl">
       <label for="volRange">Volume</label>
       <input type="range" id="volRange" min="0" max="100" value="75">
+    </div>
+    <div class="ctl">
+      <label for="densRange">Density</label>
+      <input type="range" id="densRange" min="0" max="100" value="50">
     </div>
     <div class="ctl">
       <label for="keySel">Key</label>
@@ -61,7 +74,7 @@
       <input type="range" id="swingRange" min="0" max="34" value="15">
     </div>
     <div class="ctl">
-      <label for="crackleRange">Crackle</label>
+      <label for="crackleRange">Texture</label>
       <input type="range" id="crackleRange" min="0" max="100" value="45">
     </div>
     <div class="ctl check">
