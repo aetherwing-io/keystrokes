@@ -504,14 +504,17 @@ export function createAudioEngine(actx, opts) {
     const t = ctx.createOscillator(); t.type = 'sine'; t.frequency.value = 185;
     t.connect(tg); t.start(when); t.stop(when + 0.1);
   }
-  function hatTick(when, vel, open) {
+  function hatTick(when, vel, open, direct) {
+    // direct = hand-triggered (space/enter): bypasses the activity-gated drum
+    // bus so it is audible even when the kit is laying out
+    const dest = direct ? masterFilter : drumBus;
     if (opts.getStyle().drums === 'boombap' && sampler.ok) {
-      return drumSample(open ? 'hatopen' : 'hat', drumBus, when, vel * 0.34);
+      return drumSample(open ? 'hatopen' : 'hat', dest, when, vel * (direct ? 0.28 : 0.34));
     }
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass';
     hp.frequency.value = opts.getStyle().drums === 'chip' ? 8000 : 7000;
-    hp.connect(drumBus);
-    const g = envGain(hp, when, vel * 0.25, open ? 0.3 : 0.04, 0.001);
+    hp.connect(dest);
+    const g = envGain(hp, when, vel * (direct ? 0.2 : 0.25), open ? 0.3 : 0.04, 0.001);
     const n = ctx.createBufferSource(); n.buffer = noiseBuf;
     n.connect(g); n.start(when); n.stop(when + (open ? 0.35 : 0.06));
   }

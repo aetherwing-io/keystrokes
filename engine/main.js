@@ -30,6 +30,7 @@ let keyOff = 0, drumsOn = true, claudeOn = true, mapping = 'geo';
 let masterGain = null;
 let msDest = null, recorder = null, recChunks = [];
 let keyTimes = [], lastKeyAt = 0, lastWasBoundary = true, wordCharIdx = 0;
+let bsTimes = [];                    // recent backspaces: edit bursts drive the kit
 let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
 let claudeSymbolCount = 0, claudeBoundary = true, claudeWordIdx = 0, claudeLastNoteAt = 0;
@@ -143,7 +144,7 @@ function wrapVoicesForJournal() {
   playPadChord = wrap(playPadChord, (vc, w, d, soft) => ({ t: T(w), e: 'pad', vc, d: r2(d), soft: soft ? 1 : 0 }));
   bassHit      = wrap(bassHit,      (m, v, w, o = {}) => ({ t: T(w), e: 'bass', m, v: r2(v),
     o: { wave: o.wave, cutoff: o.cutoff, dur: o.dur } }));
-  hatTick      = wrap(hatTick,      (w, v, open) => ({ t: T(w), e: 'hat', v: r2(v), open: open ? 1 : 0 }));
+  hatTick      = wrap(hatTick,      (w, v, open, dr) => ({ t: T(w), e: 'hat', v: r2(v), open: open ? 1 : 0, dr: dr ? 1 : 0 }));
   kickBoom     = wrap(kickBoom,     drumMap('kick'));
   snareDust    = wrap(snareDust,    drumMap('snare'));
   chipKick     = wrap(chipKick,     drumMap('ckick'));
@@ -506,7 +507,10 @@ function tick() {
   const act = clamp(recent / 26, 0, 1);
   smoothedAct += (act - smoothedAct) * 0.08;
 
-  engine.drumBus.gain.setTargetAtTime(drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 : 0, ctx.currentTime, 0.8);
+  bsTimes = bsTimes.filter(x => now - x < 3000);
+  const editBoost = Math.min(0.3, bsTimes.length * 0.06);   // deleting leans on the kit
+  engine.drumBus.gain.setTargetAtTime(
+    drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 + editBoost : 0, ctx.currentTime, 0.8);
   engine.masterFilter.frequency.setTargetAtTime(
     950 + smoothedAct * 1700 + (section === 'chorus' ? 400 : 0), ctx.currentTime, 1.2);
 
@@ -628,14 +632,21 @@ function handleChar(ch, shift) {
 
   if (ch === '\b') {
     currentWord = '';               // a corrected word is not the word you meant
-    playScratch(ctx.currentTime + 0.005);
-    pushViz(48, 2, 0.5, 'perc');
+    const { t } = quantized();
+    playRim(t, 0.3);                // deletes join the groove, not the foreground
+    bsTimes.push(now);
+    bsTimes = bsTimes.filter(x => now - x < 3000);
+    if (bsTimes.length === 4) {     // an edit burst drags the kit with it
+      snareDust(t + P16, 0.22);
+      snareDust(t + 2 * P16, 0.18);
+    }
+    pushViz(46, 2, 0.4, 'perc');
     return;
   }
   if (ch === ' ') {
     flushWord();
     const { t } = quantized();
-    hatTick(t, 0.25 + d * 0.35);
+    hatTick(t, 0.4 + d * 0.25, false, true);
     lastWasBoundary = true;
     pushViz(90, 1, 0.3, 'perc');
     return;
@@ -643,7 +654,7 @@ function handleChar(ch, shift) {
   if (ch === '\n') {
     flushWord();
     const { n, t } = quantized();
-    hatTick(t, 0.45, true);
+    hatTick(t, 0.45, true, true);
     bassHit(bassOf(chordAt(n)) + 12, 0.4, t);
     lastWasBoundary = true;
     pushViz(43, 0, 0.6, 'perc');

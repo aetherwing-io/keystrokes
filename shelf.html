@@ -216,7 +216,7 @@ function applyEvent(ev, eng, V, st, T) {
     case 'stab':    V.playStabTone(ev.m, ev.v, T); break;
     case 'pad':     V.playPadChord(ev.vc || [], T, ev.d || 4, !!ev.soft); break;
     case 'bass':    V.bassHit(ev.m, ev.v, T, ev.o || {}); break;
-    case 'hat':     V.hatTick(T, ev.v, !!ev.open); break;
+    case 'hat':     V.hatTick(T, ev.v, !!ev.open, !!ev.dr); break;
     case 'kick':    V.kickBoom(T, ev.v); break;
     case 'snare':   V.snareDust(T, ev.v); break;
     case 'ckick':   V.chipKick(T, ev.v); break;
