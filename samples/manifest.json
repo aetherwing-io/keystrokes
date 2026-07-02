@@ -1,0 +1,24 @@
+{
+  "rhodes": {
+    "36": "rhodes-036.wav",
+    "40": "rhodes-040.wav",
+    "44": "rhodes-044.wav",
+    "48": "rhodes-048.wav",
+    "52": "rhodes-052.wav",
+    "56": "rhodes-056.wav",
+    "60": "rhodes-060.wav",
+    "64": "rhodes-064.wav",
+    "68": "rhodes-068.wav",
+    "72": "rhodes-072.wav",
+    "76": "rhodes-076.wav",
+    "80": "rhodes-080.wav",
+    "84": "rhodes-084.wav"
+  },
+  "drums": {
+    "kick": "kick.wav",
+    "snare": "snare.wav",
+    "hat": "hat.wav",
+    "hatopen": "hatopen.wav",
+    "rim": "rim.wav"
+  }
+}

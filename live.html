@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keystrokes Live — the music of the work</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎧</text></svg>">
+</head>
+<body>
+
+<div class="deck session">
+  <header>
+    <h1>KEYSTROKES<span class="cursor">_</span></h1>
+    <span class="tagline">side B · the music of the work</span>
+    <div class="transport">
+      <button class="btn rec" id="recBtn" title="Record the output to a downloadable audio file"><span class="dot"></span>Rec</button>
+      <button class="btn power" id="powerBtn">Start the tape</button>
+    </div>
+  </header>
+
+  <div class="chips">
+    <span class="chord">chord <b id="chordChip">—</b></span>
+    <span><b id="wpmChip">0</b> wpm</span>
+    <span>flow <b id="flowChip">·····</b></span>
+    <span>sound <b id="soundChip">loading…</b></span>
+    <span class="src">keys <b id="tapChip">waiting</b></span>
+    <span class="src">claude <b id="claudeChip">quiet</b></span>
+  </div>
+
+  <textarea id="pad" spellcheck="false" autocomplete="off"
+    placeholder="Once the tap is running, this whole page is optional — go work anywhere and the music follows your typing. (You can also play right here.)"></textarea>
+
+  <canvas id="viz"></canvas>
+
+  <div class="controls">
+    <div class="ctl">
+      <label for="volRange">Volume</label>
+      <input type="range" id="volRange" min="0" max="100" value="75">
+    </div>
+    <div class="ctl">
+      <label for="keySel">Key</label>
+      <select id="keySel">
+        <option value="0" selected>C</option>
+        <option value="3">E♭</option>
+        <option value="5">F</option>
+        <option value="7">G</option>
+        <option value="9">A</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="swingRange">Swing</label>
+      <input type="range" id="swingRange" min="0" max="34" value="15">
+    </div>
+    <div class="ctl">
+      <label for="crackleRange">Crackle</label>
+      <input type="range" id="crackleRange" min="0" max="100" value="45">
+    </div>
+    <div class="ctl check">
+      <input type="checkbox" id="drumsChk" checked>
+      <label for="drumsChk">Drums</label>
+    </div>
+    <div class="ctl check">
+      <input type="checkbox" id="claudeChk" checked>
+      <label for="claudeChk">Claude voice</label>
+    </div>
+    <button class="btn demo" id="demoBtn">Auto-type a demo</button>
+  </div>
+</div>
+
+<footer>
+  <div class="legend">
+    <span class="you">your keys (solid)</span>
+    <span class="claude">claude's characters (outlined)</span>
+  </div>
+  <span class="privacy">Everything stays on this machine. Keys become notes and are discarded — nothing is logged.</span>
+</footer>
+
+<script src="engine.js"></script>
+<script>KS.connectStream();</script>
+</body>
+</html>
