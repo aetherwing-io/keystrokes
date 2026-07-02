@@ -74,19 +74,25 @@ function renderRhodes(midi) {
   for (let i = 0; i < n; i++) {
     const t = i / sr;
     const amp = Math.exp(-t / ampTau);
-    const idx = 1.6 * Math.exp(-t / 0.55) + 0.12;          // FM index: bark → warmth
+    const idx = 1.35 * Math.exp(-t / 0.55) + 0.12;         // FM index: bark → warmth
     let s = 0;
     for (const c of detunes) {
       const fc = f * Math.pow(2, c / 1200);
       s += Math.sin(TAU * fc * t + idx * Math.sin(TAU * fc * t)) * 0.5;
     }
-    s += Math.sin(TAU * f * 3.98 * t) * Math.exp(-t / tineTau) * 0.42;  // tine ping
+    s += Math.sin(TAU * f * 3.98 * t) * Math.exp(-t / tineTau) * 0.16;  // tine: felt, not rung
     out[i] = s * amp;
   }
-  // key click: 4ms of high-passed noise
+  // key click: a soft 4ms thump, not a tick
   const clickN = Math.floor(sr * 0.004);
   for (let i = 0; i < clickN; i++) {
-    out[i] += (Math.random() * 2 - 1) * 0.12 * (1 - i / clickN);
+    out[i] += (Math.random() * 2 - 1) * 0.05 * (1 - i / clickN);
+  }
+  // final warmth: shave the zing off the whole note
+  {
+    let y = 0;
+    const a = (TAU * 3600 / sr) / (1 + TAU * 3600 / sr);
+    for (let i = 0; i < n; i++) { y += a * (out[i] - y); out[i] = y; }
   }
   // attack ramp + tail fade
   const aN = Math.floor(sr * 0.002);

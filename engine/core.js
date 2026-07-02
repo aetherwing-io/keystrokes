@@ -358,14 +358,14 @@ export function createAudioEngine(actx, opts) {
   function playKalimba(midi, vel, when) {
     const dur = 1.7;
     const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 3000;
+    lp.type = 'lowpass'; lp.frequency.value = 2500;
     lp.connect(panner(midi, -0.06));
-    const g = envGain(lp, when, vel * 0.32, dur, 0.003);
+    const g = envGain(lp, when, vel * 0.32, dur, 0.004);
     const o1 = ctx.createOscillator(); o1.type = 'sine'; o1.frequency.value = mtof(midi);
     o1.detune.value = Math.random() * 6 - 3;
     wobble.connect(o1.detune);
     const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = mtof(midi) * 3.2;
-    const g2 = envGain(lp, when, vel * 0.07, 0.15, 0.002);
+    const g2 = envGain(lp, when, vel * 0.035, 0.12, 0.002);
     o1.connect(g); o2.connect(g2);
     o1.start(when); o2.start(when);
     stopAll(when + dur + 0.05, o1, o2);
@@ -393,19 +393,22 @@ export function createAudioEngine(actx, opts) {
     pan.pan.value = 0.3 + clamp((midi - 78) / 60, -0.1, 0.1);
     pan.connect(duckBus); pan.connect(reverbSend);
     const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 2400;
+    lp.type = 'lowpass'; lp.frequency.value = 1900;
     lp.connect(pan);
-    const g = envGain(lp, when, vel * 0.34, dur, 0.004);
+    const g = envGain(lp, when, vel * 0.34, dur, 0.006);
     const o1 = ctx.createOscillator();
     o1.type = 'sine'; o1.frequency.value = mtof(midi);
     o1.detune.value = Math.random() * 6 - 3;
     wobble.connect(o1.detune);
-    const o2 = ctx.createOscillator();
+    const o2 = ctx.createOscillator();                     // faint shimmer, not a bell
     o2.type = 'sine'; o2.frequency.value = mtof(midi) * 3;
-    const g2 = envGain(lp, when, vel * 0.08, 0.3, 0.002);
-    o1.connect(g); o2.connect(g2);
-    o1.start(when); o2.start(when);
-    stopAll(when + dur + 0.05, o1, o2);
+    const g2 = envGain(lp, when, vel * 0.035, 0.25, 0.002);
+    const o3 = ctx.createOscillator();                     // warm body an octave down
+    o3.type = 'triangle'; o3.frequency.value = mtof(midi - 12);
+    const g3 = ctx.createGain(); g3.gain.value = 0.22;
+    o1.connect(g); o2.connect(g2); o3.connect(g3); g3.connect(g);
+    o1.start(when); o2.start(when); o3.start(when);
+    stopAll(when + dur + 0.05, o1, o2, o3);
   }
 
   /* ----- harmony voices ----- */
