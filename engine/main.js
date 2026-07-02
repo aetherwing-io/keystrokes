@@ -32,6 +32,34 @@ let keyTimes = [], lastKeyAt = 0, lastWasBoundary = true, wordCharIdx = 0;
 let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
 let claudeSymbolCount = 0, claudeBoundary = true, claudeWordIdx = 0;
+let lastUserMidi = 0, lastUserNoteAt = 0;
+
+/* leitmotifs: recurring words become the session's theme (memory only — the
+ * words themselves are never persisted or journaled, only their notes) */
+let currentWord = '';
+const wordCounts = new Map();
+let motifs = [];
+let motifIdx = 0, lastMotifBar = -4, motifGroup = 0;
+
+function flushWord() {
+  const w = currentWord;
+  currentWord = '';
+  if (w.length < 4) return;
+  const c = (wordCounts.get(w) || 0) + 1;
+  wordCounts.set(w, c);
+  if (wordCounts.size > 500) {
+    let minK = null, minV = Infinity;
+    for (const [k, v] of wordCounts) if (v < minV) { minV = v; minK = k; }
+    wordCounts.delete(minK);
+  }
+  if (c >= 4) {
+    motifs = [...wordCounts.entries()]
+      .filter(([, v]) => v >= 4)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([k]) => k);
+  }
+}
 const claudeQueue = [];
 const slotNotes = new Map();
 const vizNotes = [];
@@ -277,6 +305,12 @@ function scheduleSlot(s) {
     setTimeout(() => {
       setChip('chordChip', NOTE_NAMES[(chord.root + keyOff) % 12] + chord.label);
     }, delta);
+
+    if (motifs.length && bar - lastMotifBar >= 2 &&
+        (section === 'verse' || section === 'chorus')) {
+      lastMotifBar = bar;
+      echoMotif(chord, t + 4 * P16);   // enters on beat 2, behind the chord
+    }
   }
 
   if (STYLE.harmony === 'arp' && pos % 2 === 0) {
@@ -390,9 +424,25 @@ function quantized() {
   if (t < now + 0.005) { n++; t = t0 + n * P16 + (n % 2 ? swingDelay() : 0); }
   return { n, t };
 }
-function pushViz(midi, tier, vel, kind) {
-  vizNotes.push({ born: performance.now(), midi, tier, vel, kind, x: Math.random() });
+function pushViz(midi, tier, vel, kind, g) {
+  vizNotes.push({ born: performance.now(), midi, tier, vel, kind, g, x: Math.random() });
   if (vizNotes.length > 500) vizNotes.splice(0, vizNotes.length - 500);
+}
+
+/* a registered word replayed through the current chord — the theme adapts */
+function echoMotif(chord, t) {
+  const w = motifs[motifIdx++ % motifs.length];
+  const pcs = allowedPcs(chord, 1);
+  const gid = ++motifGroup;
+  let i = 0;
+  for (const ch of w) {
+    let m = geoMidi(ch, false);
+    if (m == null) continue;
+    m = snapMidi(clamp(m, 57, 81), pcs);
+    playKalimba(m, 0.17, t + i * P16);
+    pushViz(m, 1, 0.3, 'motif', gid);
+    i++;
+  }
 }
 
 /* ---------- user voice ---------- */
@@ -411,11 +461,13 @@ function handleChar(ch, shift) {
   }
 
   if (ch === '\b') {
+    currentWord = '';               // a corrected word is not the word you meant
     playScratch(ctx.currentTime + 0.005);
     pushViz(48, 2, 0.5, 'perc');
     return;
   }
   if (ch === ' ') {
+    flushWord();
     const { t } = quantized();
     hatTick(t, 0.25 + d * 0.35);
     lastWasBoundary = true;
@@ -423,6 +475,7 @@ function handleChar(ch, shift) {
     return;
   }
   if (ch === '\n') {
+    flushWord();
     const { n, t } = quantized();
     hatTick(t, 0.45, true);
     bassHit(bassOf(chordAt(n)) + 12, 0.4, t);
@@ -442,13 +495,24 @@ function handleChar(ch, shift) {
   const count = slotNotes.get(n) || 0;
 
   if (ch in CADENCE) {
+    flushWord();
     const rootPc = (chord.root + keyOff) % 12;
     let m = 60 + rootPc; if (m < 58) m += 12;
     m += CADENCE[ch];
     playMelody(m, ch === '!' ? 0.7 : 0.45, t + count * 0.033, 0);
     slotNotes.set(n, count + 1);
     lastWasBoundary = true;
+    lastUserMidi = m; lastUserNoteAt = now;
     pushViz(m, 0, 0.5, 'note');
+    if (ch === '?' && claudeOn && claudeQueue.length === 0) {
+      // a question deserves an answer: 9th, down to the 7th, home
+      const base = 72 + rootPc;
+      playClaude(base + 14, 0.4, t + SPB);
+      playClaude(base + 11, 0.35, t + SPB * 1.5);
+      playClaude(base + 12, 0.45, t + SPB * 2);
+      pushViz(base + 14, 1, 0.4, 'claude');
+      pushViz(base + 12, 1, 0.4, 'claude');
+    }
     return;
   }
 
@@ -456,6 +520,7 @@ function handleChar(ch, shift) {
   const isDigit = ch >= '0' && ch <= '9';
 
   if (!isLetter && !isDigit) {
+    flushWord();
     playRim(t, 0.45);
     pushViz(92, 2, 0.25, 'perc');
     if ('{}[]()<>'.includes(ch)) {
@@ -466,6 +531,8 @@ function handleChar(ch, shift) {
     lastWasBoundary = false;
     return;
   }
+
+  if (isLetter) currentWord = (currentWord + ch).slice(0, 24);
 
   const slotCap = d < 0.5 ? 3 : 4;
   if (count >= slotCap) return;
@@ -500,6 +567,7 @@ function handleChar(ch, shift) {
 
   playMelody(midi, vel, t + count * 0.033, tier);
   slotNotes.set(n, count + 1);
+  lastUserMidi = midi; lastUserNoteAt = now;
   pushViz(midi, tier, vel, 'note');
 }
 
@@ -545,12 +613,22 @@ function claudeStep(item) {
   claudeBoundary = false;
   if (!wordInitial && tier === 0 && d < 0.5 && claudeWordIdx % 2 === 1) return;
 
-  let midi = geoMidi(ch, false);
-  if (midi == null) return;
-  midi = clamp(midi + 12, 64, 96);
-  midi = snapMidi(midi, allowedPcs(chord, tier));
+  const nowMs = performance.now();
+  const idleLead = lastKeyAt > 0 && nowMs - lastKeyAt > 15000;
+  let midi;
+  if (lastUserMidi && nowMs - lastUserNoteAt < 350) {
+    // playing together: harmonize a third (or a fifth) above the user's note
+    midi = snapMidi(lastUserMidi + 4, allowedPcs(chord, 1));
+    if (midi <= lastUserMidi + 2) midi = snapMidi(lastUserMidi + 7, allowedPcs(chord, 1));
+    midi = clamp(midi, 64, 98);
+  } else {
+    midi = geoMidi(ch, false);
+    if (midi == null) return;
+    midi = clamp(midi + 12, idleLead ? 60 : 64, idleLead ? 98 : 96);
+    midi = snapMidi(midi, allowedPcs(chord, tier));
+  }
 
-  let vel = 0.32;
+  let vel = 0.32 + (idleLead ? 0.1 : 0);   // the lead is Claude's while you read
   if (wordInitial) vel += 0.12;
 
   playClaude(midi, vel, t);
@@ -915,6 +993,7 @@ if (viz) {
 
     const now = performance.now();
     const fadeZone = Math.max(60, W * 0.18);
+    const motifLines = new Map();   // group id -> [{x, y, alpha}] for connecting lines
     for (let i = vizNotes.length - 1; i >= 0; i--) {
       const nn = vizNotes[i];
       const age = (now - nn.born) / 1000;
@@ -938,6 +1017,13 @@ if (viz) {
         vctx.fillStyle = 'rgba(226,166,91,' + (alpha * 0.9).toFixed(3) + ')';
         vctx.fillRect(-3, -3, 6, 6);
         vctx.restore();
+      } else if (nn.kind === 'motif') {
+        if (!motifLines.has(nn.g)) motifLines.set(nn.g, []);
+        motifLines.get(nn.g).push({ x, y, alpha });
+        vctx.beginPath();
+        vctx.arc(x, y, 2.2, 0, Math.PI * 2);
+        vctx.fillStyle = '#eae0d0' + Math.round(alpha * 150).toString(16).padStart(2, '0');
+        vctx.fill();
       } else if (nn.kind === 'claude') {
         vctx.beginPath();
         vctx.arc(x, y, 2.5 + nn.vel * 5, 0, Math.PI * 2);
@@ -950,6 +1036,16 @@ if (viz) {
         vctx.fillStyle = TIER_COLORS[nn.tier] + Math.round(alpha * 210).toString(16).padStart(2, '0');
         vctx.fill();
       }
+    }
+    // connect each motif's notes — the theme reads as a little constellation
+    for (const pts of motifLines.values()) {
+      if (pts.length < 2) continue;
+      vctx.beginPath();
+      vctx.moveTo(pts[0].x, pts[0].y);
+      for (let p = 1; p < pts.length; p++) vctx.lineTo(pts[p].x, pts[p].y);
+      vctx.strokeStyle = 'rgba(234,224,208,' + (pts[0].alpha * 0.35).toFixed(3) + ')';
+      vctx.lineWidth = 1;
+      vctx.stroke();
     }
     requestAnimationFrame(drawViz);
   };
@@ -970,6 +1066,7 @@ function debug() {
     vizCount: vizNotes.length,
     telem: telemCount, tension: erroredFiles.size, pendingBash,
     section, buildAtBar, chorusStartBar, chorusUntilBar, outroAtBar,
+    motifs: motifs.length, words: wordCounts.size,
   };
 }
 
