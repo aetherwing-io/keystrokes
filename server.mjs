@@ -60,6 +60,9 @@ const server = http.createServer((req, res) => {
   } else if (/^\/samples\/[a-z0-9._-]+$/i.test(u)) {
     file = u.slice(1);
     type = u.endsWith('.json') ? 'application/json' : 'audio/wav';
+  } else if (/^\/engine\/[a-z0-9._-]+\.js$/i.test(u)) {
+    file = u.slice(1);
+    type = 'text/javascript; charset=utf-8';
   }
   if (file) {
     fs.readFile(path.join(ROOT, file), (err, data) => {

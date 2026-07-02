@@ -89,7 +89,9 @@
   <span class="privacy">Everything stays on this machine. Keys become notes and are discarded — nothing is logged.</span>
 </footer>
 
-<script src="engine.js"></script>
-<script>KS.connectStream();</script>
+<script type="module">
+  import { connectStream } from './engine/main.js';
+  connectStream();
+</script>
 </body>
 </html>

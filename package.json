@@ -1,0 +1,11 @@
+{
+  "name": "keystrokes",
+  "private": true,
+  "type": "module",
+  "description": "A lofi instrument for people who type — your keystrokes steer the music.",
+  "scripts": {
+    "start": "./start.sh",
+    "samples": "node tools/make-samples.mjs",
+    "server": "node server.mjs"
+  }
+}

@@ -1,108 +1,33 @@
-/* keystrokes engine — shared audio core for index.html (the site) and
- * live.html (the local session soundtrack).
- *
- * Keystrokes don't choose the music; they steer it. Every key proposes a
- * note, the engine quantizes it to the grid and snaps it to the current
- * chord. A style preset decides what everything sounds like: instruments,
- * tempo, chords, drums, and the background texture.
+/* keystrokes main — the live page wiring. Owns page state (style, key,
+ * transport, activity), the lookahead scheduler, the keystroke and Claude
+ * character sources, controls, recording, demo, and the viz. All actual
+ * sound comes from the audio engine factory in core.js.
  */
-'use strict';
+import {
+  STYLES, NOTE_NAMES, mtof, clamp,
+  createAudioEngine, fetchSamplePack, makeSampler, decodeSamplerInto,
+} from './core.js';
 
-window.KS = (() => {
-
-/* ---------- shared music constants ---------- */
+/* ---------- mapping constants (live derivation only) ---------- */
 const DIA = [0, 2, 4, 5, 7, 9, 11];
 const PENT = [0, 2, 4, 7, 9];
-const NOTE_NAMES = ['C','D♭','D','E♭','E','F','G♭','G','A♭','A','B♭','B'];
 const FREQ = 'etaoinshrdlcumwfgypbvkjxqz';
 const ROWS = ['1234567890', 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
 const ROW_BASE = [76, 64, 59, 52];
 const LEFT_HAND = new Set('12345qwertasdfgzxcvb');
 const CADENCE = { '.': 0, ',': 7, '?': 14, '!': 12 };
 
-/* ---------- styles ----------
- * bpc: bars per chord. harmony: stab | pad | padlong | arp.
- * lead voices: rhodes (sampled) | pulse | saw | kalimba.
- */
-const STYLES = {
-  lofi: {
-    title: 'Lofi tape', bpm: 76, bpc: 1, leadOct: 0,
-    lead: 'rhodes', harmony: 'stab', bass: 'lofi', drums: 'boombap', bed: 'vinyl',
-    progs: [
-      [ // IV - iii - ii - vi
-        { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
-        { label: 'm7',   root: 4, tones: [4, 7, 11, 2] },
-        { label: 'm9',   root: 2, tones: [2, 5, 9, 0, 4] },
-        { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
-      ],
-      [ // vi - IV - I - V13
-        { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
-        { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
-        { label: 'maj9', root: 0, tones: [0, 4, 7, 11, 2] },
-        { label: '13',   root: 7, tones: [7, 11, 5, 4] },
-      ],
-      [ // ii - V13 - I - vi
-        { label: 'm9',   root: 2, tones: [2, 5, 9, 0, 4] },
-        { label: '13',   root: 7, tones: [7, 11, 5, 4] },
-        { label: 'maj9', root: 0, tones: [0, 4, 7, 11, 2] },
-        { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
-      ],
-    ],
-  },
-  arcade: {
-    title: 'Arcade (8-bit)', bpm: 112, bpc: 1, leadOct: 12,
-    lead: 'pulse', harmony: 'arp', bass: 'chip', drums: 'chip', bed: 'hiss',
-    progs: [
-      [ // I - V - vi - IV, sunny
-        { label: '',  root: 0, tones: [0, 4, 7] },
-        { label: '',  root: 7, tones: [7, 11, 2] },
-        { label: 'm', root: 9, tones: [9, 0, 4] },
-        { label: '',  root: 5, tones: [5, 9, 0] },
-      ],
-      [ // I - vi - IV - V
-        { label: '',  root: 0, tones: [0, 4, 7] },
-        { label: 'm', root: 9, tones: [9, 0, 4] },
-        { label: '',  root: 5, tones: [5, 9, 0] },
-        { label: '',  root: 7, tones: [7, 11, 2] },
-      ],
-    ],
-  },
-  drive: {
-    title: 'Night drive', bpm: 92, bpc: 1, leadOct: 0,
-    lead: 'saw', harmony: 'pad', bass: 'octave', drums: 'retro', bed: 'hiss',
-    progs: [
-      [ // i - VI - III - VII, neon
-        { label: 'm7',   root: 9, tones: [9, 0, 4, 7] },
-        { label: 'maj7', root: 5, tones: [5, 9, 0, 4] },
-        { label: 'maj7', root: 0, tones: [0, 4, 7, 11] },
-        { label: '7',    root: 7, tones: [7, 11, 2, 5] },
-      ],
-    ],
-  },
-  rain: {
-    title: 'Rainy day', bpm: 62, bpc: 2, leadOct: 0,
-    lead: 'kalimba', harmony: 'padlong', bass: 'drone', drums: 'sparse', bed: 'rain',
-    progs: [
-      [ // slow sway
-        { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
-        { label: 'maj9', root: 0, tones: [0, 4, 7, 11, 2] },
-        { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
-        { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
-      ],
-    ],
-  },
-};
-
 /* ---------- state ---------- */
 let STYLE = STYLES.lofi;
 let SPB = 60 / STYLE.bpm;
 let P16 = SPB / 4;
 
+let engine = null;
 let ctx = null, started = false, running = false;
 let t0 = 0, slot = 0, tickTimer = null;
 let keyOff = 0, drumsOn = true, claudeOn = true, mapping = 'geo';
-let masterGain, masterFilter, comp, drumBus, wobble, noiseBuf;
-let crackleGain, bedSources = [], msDest = null, recorder = null, recChunks = [];
+let masterGain = null;
+let msDest = null, recorder = null, recChunks = [];
 let keyTimes = [], lastKeyAt = 0, lastWasBoundary = true, wordCharIdx = 0;
 let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
@@ -112,38 +37,21 @@ const slotNotes = new Map();
 const vizNotes = [];
 let demoTimer = null;
 
+/* voice bindings — destructured from the engine factory at init */
+let rhodesNote, playPulse, playSawLead, playKalimba, playMelodyOsc, playClaude,
+    playStabTone, playPadChord, bassHit,
+    kickBoom, snareDust, hatTick, chipKick, chipSnare, retroKick, gatedSnare,
+    shaker, playRim, playScratch;
+
+const sampler = makeSampler();
+const rawPack = fetchSamplePack();   // network fetch starts at page load
+
 const $ = id => document.getElementById(id);
 const setChip = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
-const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const val = (id, dflt) => { const el = $(id); return el ? +el.value : dflt; };
 const density = () => val('densRange', 50) / 100;
-
-/* ---------- samples ---------- */
-const sampler = { ok: false, rhodes: new Map(), keys: [], drums: {} };
-const prefetch = (async () => {
-  const man = await (await fetch('samples/manifest.json')).json();
-  const get = async f => await (await fetch('samples/' + f)).arrayBuffer();
-  const rhodes = await Promise.all(
-    Object.entries(man.rhodes).map(async ([m, f]) => [+m, await get(f)]));
-  const drums = await Promise.all(
-    Object.entries(man.drums).map(async ([k, f]) => [k, await get(f)]));
-  return { rhodes, drums };
-})().catch(() => null);
-
-async function loadSamples() {
-  const raw = await prefetch;
-  if (!raw) { setChip('soundChip', 'synth'); return; }
-  try {
-    for (const [m, ab] of raw.rhodes) sampler.rhodes.set(m, await ctx.decodeAudioData(ab.slice(0)));
-    for (const [k, ab] of raw.drums) sampler.drums[k] = await ctx.decodeAudioData(ab.slice(0));
-    sampler.keys = [...sampler.rhodes.keys()].sort((a, b) => a - b);
-    sampler.ok = true;
-    setChip('soundChip', 'sampled');
-  } catch {
-    setChip('soundChip', 'synth');
-  }
-}
+function volLevel() { return (val('volRange', 75) / 100) * 1.1; }
+function cracLevel() { return (val('crackleRange', 45) / 100) * 0.16; }
 
 /* ---------- mapping ---------- */
 function chordAt(slotIdx) {
@@ -202,172 +110,25 @@ function voicingOf(chord) {
   return v;
 }
 
-/* ---------- audio graph ---------- */
+/* ---------- init ---------- */
 function initAudio() {
-  ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-  comp = ctx.createDynamicsCompressor();
-  comp.threshold.value = -18; comp.knee.value = 20; comp.ratio.value = 4;
-  masterGain = ctx.createGain();
-  masterGain.gain.value = volLevel();
-  masterFilter = ctx.createBiquadFilter();
-  masterFilter.type = 'lowpass'; masterFilter.frequency.value = 1100; masterFilter.Q.value = 0.4;
-
-  masterFilter.connect(comp); comp.connect(masterGain); masterGain.connect(ctx.destination);
-
-  drumBus = ctx.createGain(); drumBus.gain.value = 0; drumBus.connect(masterFilter);
-
-  wobble = ctx.createGain(); wobble.gain.value = 6;
-  const lfo = ctx.createOscillator();
-  lfo.frequency.value = 0.45; lfo.connect(wobble); lfo.start();
-
-  noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-  const nd = noiseBuf.getChannelData(0);
-  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-
-  buildBed();
-  loadSamples();
-}
-function volLevel() { return (val('volRange', 75) / 100) * 1.1; }
-function cracLevel() { return (val('crackleRange', 45) / 100) * 0.16; }
-
-/* ---------- background texture (the "bed") ---------- */
-function buildBed() {
-  bedSources.forEach(s => { try { s.stop(); } catch { /* already stopped */ } });
-  bedSources = [];
-  if (crackleGain) { try { crackleGain.disconnect(); } catch { /* fine */ } }
-  crackleGain = ctx.createGain();
-  crackleGain.gain.value = cracLevel();
-  crackleGain.connect(comp);
-
-  const noiseLayer = (lpHz, hpHz, gain) => {
-    const src = ctx.createBufferSource();
-    src.buffer = noiseBuf; src.loop = true;
-    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = lpHz;
-    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = hpHz;
-    const g = ctx.createGain(); g.gain.value = gain;
-    src.connect(lp); lp.connect(hp); hp.connect(g); g.connect(crackleGain);
-    src.start(); bedSources.push(src);
-  };
-  const popLayer = (count, bright, gain) => {
-    const len = ctx.sampleRate * 4;
-    const pb = ctx.createBuffer(1, len, ctx.sampleRate);
-    const pd = pb.getChannelData(0);
-    for (let n = 0; n < count; n++) {
-      const at = Math.floor(Math.random() * (len - 200));
-      const amp = 0.25 + Math.random() * 0.75;
-      const w = 2 + Math.floor(Math.random() * 5);
-      for (let j = 0; j < w * 12; j++) {
-        pd[at + j] += (Math.random() * 2 - 1) * amp * Math.exp(-j / (w * 3));
-      }
-    }
-    const pops = ctx.createBufferSource();
-    pops.buffer = pb; pops.loop = true;
-    const f = ctx.createBiquadFilter();
-    f.type = bright ? 'highpass' : 'lowpass';
-    f.frequency.value = bright ? 500 : 2800;
-    const g = ctx.createGain(); g.gain.value = gain;
-    pops.connect(f); f.connect(g); g.connect(crackleGain);
-    pops.start(); bedSources.push(pops);
-  };
-
-  switch (STYLE.bed) {
-    case 'vinyl':
-      noiseLayer(4200, 60, 0.012);
-      popLayer(42, true, 0.5);
-      break;
-    case 'rain':
-      noiseLayer(2600, 400, 0.05);
-      popLayer(140, false, 0.35);   // soft droplets
-      break;
-    case 'hiss':
-    default:
-      noiseLayer(6000, 100, 0.014);
-      break;
-  }
+  engine = createAudioEngine(
+    new (window.AudioContext || window.webkitAudioContext)(),
+    { sampler, getStyle: () => STYLE, getCrackle: cracLevel });
+  ctx = engine.ctx;
+  masterGain = engine.masterGain;
+  ({ rhodesNote, playPulse, playSawLead, playKalimba, playMelodyOsc, playClaude,
+     playStabTone, playPadChord, bassHit,
+     kickBoom, snareDust, hatTick, chipKick, chipSnare, retroKick, gatedSnare,
+     shaker, playRim, playScratch } = engine.voices);
+  engine.setVolume(volLevel());
+  engine.buildBed();
+  decodeSamplerInto(ctx, sampler, rawPack).then(ok => {
+    setChip('soundChip', ok ? 'sampled' : 'synth');
+  });
 }
 
-/* ---------- voice helpers ---------- */
-function envGain(dest, when, peak, dur, attack) {
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, when);
-  g.gain.linearRampToValueAtTime(peak, when + (attack || 0.008));
-  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
-  g.connect(dest);
-  return g;
-}
-function stopAll(when, ...nodes) { nodes.forEach(n => n.stop(when)); }
-function panner(midi, bias) {
-  const pan = ctx.createStereoPanner();
-  pan.pan.value = clamp((midi - 64) / 36, -0.45, 0.45) + (bias || -0.12);
-  pan.connect(masterFilter);
-  return pan;
-}
-
-/* ---------- lead voices ---------- */
-function rhodesNote(midi, vel, when, o = {}) {
-  if (!sampler.ok) { playMelodyOsc(midi, vel, when, o.tier || 0); return; }
-  let best = sampler.keys[0];
-  for (const k of sampler.keys) if (Math.abs(k - midi) < Math.abs(best - midi)) best = k;
-  const src = ctx.createBufferSource();
-  src.buffer = sampler.rhodes.get(best);
-  src.playbackRate.value = Math.pow(2, (midi - best) / 12);
-  src.detune.value = Math.random() * 6 - 3;
-  wobble.connect(src.detune);
-
-  const g = ctx.createGain();
-  const peak = Math.pow(vel, 1.25) * (o.gainMul ?? 1);
-  const dur = o.dur ?? 1.4;
-  g.gain.setValueAtTime(peak, when);
-  g.gain.setValueAtTime(peak, when + dur * 0.55);
-  g.gain.linearRampToValueAtTime(0.0001, when + dur);
-
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass'; lp.frequency.value = o.cutoff ?? 1900;
-  src.connect(g); g.connect(lp); lp.connect(panner(midi, o.panBias));
-  src.start(when);
-  src.stop(when + dur + 0.05);
-}
-function playPulse(midi, vel, when, tier) {
-  const dur = 0.16 + tier * 0.05;
-  const g = envGain(panner(midi, -0.08), when, vel * 0.22, dur + 0.05, 0.004);
-  const o = ctx.createOscillator();
-  o.type = 'square';
-  const f = mtof(midi);
-  o.frequency.setValueAtTime(f * 0.94, when);          // tiny chip pitch-blip
-  o.frequency.linearRampToValueAtTime(f, when + 0.03);
-  o.connect(g); o.start(when); o.stop(when + dur + 0.1);
-}
-function playSawLead(midi, vel, when, tier) {
-  const dur = 0.5 + tier * 0.15;
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass'; lp.frequency.value = 2400;
-  lp.connect(panner(midi, -0.08));
-  const g = envGain(lp, when, vel * 0.3, dur, 0.006);
-  const o1 = ctx.createOscillator(); o1.type = 'sawtooth';
-  o1.frequency.value = mtof(midi); o1.detune.value = -7;
-  const o2 = ctx.createOscillator(); o2.type = 'sawtooth';
-  o2.frequency.value = mtof(midi); o2.detune.value = 7;
-  wobble.connect(o1.detune);
-  o1.connect(g); o2.connect(g);
-  o1.start(when); o2.start(when);
-  stopAll(when + dur + 0.05, o1, o2);
-}
-function playKalimba(midi, vel, when) {
-  const dur = 1.7;
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass'; lp.frequency.value = 3000;
-  lp.connect(panner(midi, -0.06));
-  const g = envGain(lp, when, vel * 0.32, dur, 0.003);
-  const o1 = ctx.createOscillator(); o1.type = 'sine'; o1.frequency.value = mtof(midi);
-  o1.detune.value = Math.random() * 6 - 3;
-  wobble.connect(o1.detune);
-  const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = mtof(midi) * 3.2;
-  const g2 = envGain(lp, when, vel * 0.07, 0.15, 0.002);
-  o1.connect(g); o2.connect(g2);
-  o1.start(when); o2.start(when);
-  stopAll(when + dur + 0.05, o1, o2);
-}
+/* ---------- melody dispatch ---------- */
 function playMelody(midi, vel, when, tier) {
   midi += STYLE.leadOct;
   switch (STYLE.lead) {
@@ -378,104 +139,7 @@ function playMelody(midi, vel, when, tier) {
   }
 }
 
-/* oscillator fallback lead + the permanent Claude music box */
-function playMelodyOsc(midi, vel, when, tier) {
-  const dur = 0.85 + tier * 0.25;
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass'; lp.frequency.value = 1750;
-  lp.connect(panner(midi));
-  const g = envGain(lp, when, vel * 0.5, dur);
-  const o1 = ctx.createOscillator();
-  o1.type = 'triangle'; o1.frequency.value = mtof(midi);
-  o1.detune.value = Math.random() * 8 - 4;
-  wobble.connect(o1.detune);
-  const o2 = ctx.createOscillator();
-  o2.type = 'sine'; o2.frequency.value = mtof(midi - 12);
-  const g2 = ctx.createGain(); g2.gain.value = 0.35;
-  o1.connect(g); o2.connect(g2); g2.connect(g);
-  o1.start(when); o2.start(when);
-  stopAll(when + dur + 0.05, o1, o2);
-}
-function playClaude(midi, vel, when) {
-  const dur = 1.25;
-  const pan = ctx.createStereoPanner();
-  pan.pan.value = 0.3 + clamp((midi - 78) / 60, -0.1, 0.1);
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass'; lp.frequency.value = 2400;
-  lp.connect(pan); pan.connect(masterFilter);
-  const g = envGain(lp, when, vel * 0.34, dur, 0.004);
-  const o1 = ctx.createOscillator();
-  o1.type = 'sine'; o1.frequency.value = mtof(midi);
-  o1.detune.value = Math.random() * 6 - 3;
-  wobble.connect(o1.detune);
-  const o2 = ctx.createOscillator();
-  o2.type = 'sine'; o2.frequency.value = mtof(midi) * 3;
-  const g2 = envGain(lp, when, vel * 0.08, 0.3, 0.002);
-  o1.connect(g); o2.connect(g2);
-  o1.start(when); o2.start(when);
-  stopAll(when + dur + 0.05, o1, o2);
-}
-
-/* ---------- harmony voices ---------- */
-function playStabTone(midi, vel, when) {
-  if (sampler.ok) {
-    rhodesNote(midi, vel, when, { dur: 2.6, cutoff: 1250, panBias: 0.12, gainMul: 0.8 });
-    return;
-  }
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass'; lp.frequency.value = 1250;
-  lp.connect(masterFilter);
-  const g = envGain(lp, when, vel, 2.6, 0.012);
-  const o1 = ctx.createOscillator();
-  o1.type = 'sine'; o1.frequency.value = mtof(midi);
-  wobble.connect(o1.detune);
-  const o2 = ctx.createOscillator();
-  o2.type = 'triangle'; o2.frequency.value = mtof(midi); o2.detune.value = 5;
-  const g2 = ctx.createGain(); g2.gain.value = 0.25;
-  const bell = ctx.createOscillator();
-  bell.type = 'sine'; bell.frequency.value = mtof(midi) * 4;
-  const bg = envGain(lp, when, vel * 0.18, 0.22);
-  o1.connect(g); o2.connect(g2); g2.connect(g); bell.connect(bg);
-  o1.start(when); o2.start(when); bell.start(when);
-  stopAll(when + 2.7, o1, o2, bell);
-}
-function playPadChord(voicing, when, dur, soft) {
-  for (const midi of voicing) {
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = soft ? 1400 : 950;
-    lp.connect(masterFilter);
-    const g = ctx.createGain();
-    const peak = soft ? 0.05 : 0.055;
-    g.gain.setValueAtTime(0.0001, when);
-    g.gain.linearRampToValueAtTime(peak, when + (soft ? 0.6 : 0.3));
-    g.gain.setValueAtTime(peak, when + dur - 0.5);
-    g.gain.linearRampToValueAtTime(0.0001, when + dur);
-    g.connect(lp);
-    const mk = type => {
-      const o = ctx.createOscillator();
-      o.type = type; o.frequency.value = mtof(midi);
-      o.detune.value = Math.random() * 10 - 5;
-      wobble.connect(o.detune);
-      o.connect(g); o.start(when); o.stop(when + dur + 0.1);
-    };
-    if (soft) { mk('sine'); mk('triangle'); }
-    else { mk('sawtooth'); mk('sawtooth'); }
-  }
-}
-
-/* ---------- bass ---------- */
-function bassHit(midi, vel, when, o = {}) {
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass'; lp.frequency.value = o.cutoff ?? 420;
-  lp.connect(masterFilter);
-  const g = envGain(lp, when, vel, o.dur ?? 0.8, 0.012);
-  const o1 = ctx.createOscillator(); o1.type = o.wave ?? 'sine'; o1.frequency.value = mtof(midi);
-  const o2 = ctx.createOscillator(); o2.type = 'triangle'; o2.frequency.value = mtof(midi);
-  const g2 = ctx.createGain(); g2.gain.value = 0.3;
-  o1.connect(g); o2.connect(g2); g2.connect(g);
-  o1.start(when); o2.start(when);
-  stopAll(when + (o.dur ?? 0.8) + 0.1, o1, o2);
-}
+/* ---------- bass & drum patterns ---------- */
 function scheduleBass(chord, pos, bar, t, act) {
   const root = bassOf(chord);
   switch (STYLE.bass) {
@@ -493,99 +157,6 @@ function scheduleBass(chord, pos, bar, t, act) {
       if (pos === 10) bassHit(bar % 2 ? root + 7 : root, 0.38, t);
   }
 }
-
-/* ---------- drums ---------- */
-function drumSample(name, dest, when, gain) {
-  const src = ctx.createBufferSource();
-  src.buffer = sampler.drums[name];
-  src.playbackRate.value = 0.97 + Math.random() * 0.06;
-  const g = ctx.createGain(); g.gain.value = gain;
-  src.connect(g); g.connect(dest); src.start(when);
-}
-function kickBoom(when, vel) {
-  if (sampler.ok) return drumSample('kick', drumBus, when, vel * 0.95);
-  const g = envGain(drumBus, when, vel, 0.28, 0.004);
-  const o = ctx.createOscillator(); o.type = 'sine';
-  o.frequency.setValueAtTime(120, when);
-  o.frequency.exponentialRampToValueAtTime(46, when + 0.09);
-  o.connect(g); o.start(when); o.stop(when + 0.3);
-}
-function snareDust(when, vel) {
-  if (sampler.ok) return drumSample('snare', drumBus, when, vel * 0.6);
-  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass';
-  bp.frequency.value = 1700; bp.Q.value = 0.9; bp.connect(drumBus);
-  const ng = envGain(bp, when, vel * 0.7, 0.16, 0.002);
-  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
-  n.connect(ng); n.start(when); n.stop(when + 0.2);
-}
-function hatTick(when, vel, open) {
-  if (STYLE.drums === 'boombap' && sampler.ok) {
-    return drumSample(open ? 'hatopen' : 'hat', drumBus, when, vel * 0.34);
-  }
-  const hp = ctx.createBiquadFilter(); hp.type = 'highpass';
-  hp.frequency.value = STYLE.drums === 'chip' ? 8000 : 7000;
-  hp.connect(drumBus);
-  const g = envGain(hp, when, vel * 0.25, open ? 0.3 : 0.04, 0.001);
-  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
-  n.connect(g); n.start(when); n.stop(when + (open ? 0.35 : 0.06));
-}
-function chipKick(when, vel) {
-  const g = envGain(drumBus, when, vel * 0.8, 0.15, 0.002);
-  const o = ctx.createOscillator(); o.type = 'triangle';
-  o.frequency.setValueAtTime(160, when);
-  o.frequency.exponentialRampToValueAtTime(50, when + 0.07);
-  o.connect(g); o.start(when); o.stop(when + 0.18);
-}
-function chipSnare(when, vel) {
-  const hp = ctx.createBiquadFilter(); hp.type = 'highpass';
-  hp.frequency.value = 1200; hp.connect(drumBus);
-  const g = envGain(hp, when, vel * 0.4, 0.09, 0.001);
-  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
-  n.connect(g); n.start(when); n.stop(when + 0.12);
-}
-function retroKick(when, vel) {
-  const g = envGain(drumBus, when, vel, 0.3, 0.003);
-  const o = ctx.createOscillator(); o.type = 'sine';
-  o.frequency.setValueAtTime(100, when);
-  o.frequency.exponentialRampToValueAtTime(40, when + 0.06);
-  o.connect(g); o.start(when); o.stop(when + 0.32);
-}
-function gatedSnare(when, vel) {
-  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass';
-  bp.frequency.value = 1500; bp.Q.value = 0.7; bp.connect(drumBus);
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(vel * 0.55, when);
-  g.gain.setValueAtTime(vel * 0.35, when + 0.16);
-  g.gain.linearRampToValueAtTime(0.0001, when + 0.19);  // the gate slam
-  g.connect(bp);
-  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
-  n.connect(g); n.start(when); n.stop(when + 0.22);
-}
-function shaker(when, vel) {
-  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass';
-  bp.frequency.value = 4500; bp.Q.value = 1; bp.connect(drumBus);
-  const g = envGain(bp, when, vel * 0.18, 0.09, 0.01);
-  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
-  n.connect(g); n.start(when); n.stop(when + 0.12);
-}
-function playRim(when, vel) {
-  if (sampler.ok) return drumSample('rim', masterFilter, when, vel * 0.5);
-  const hp = ctx.createBiquadFilter(); hp.type = 'highpass';
-  hp.frequency.value = 3000; hp.connect(masterFilter);
-  const g = envGain(hp, when, vel * 0.2, 0.03, 0.001);
-  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
-  n.connect(g); n.start(when); n.stop(when + 0.04);
-}
-function playScratch(when) {
-  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 1.2;
-  bp.frequency.setValueAtTime(2800, when);
-  bp.frequency.exponentialRampToValueAtTime(320, when + 0.09);
-  bp.connect(comp);
-  const g = envGain(bp, when, 0.22, 0.1, 0.002);
-  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
-  n.connect(g); n.start(when); n.stop(when + 0.12);
-}
-
 function scheduleDrums(pos, bar, t, act) {
   const d = density();
   switch (STYLE.drums) {
@@ -666,8 +237,8 @@ function tick() {
   const act = clamp(recent / 26, 0, 1);
   smoothedAct += (act - smoothedAct) * 0.08;
 
-  drumBus.gain.setTargetAtTime(drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 : 0, ctx.currentTime, 0.8);
-  masterFilter.frequency.setTargetAtTime(950 + smoothedAct * 1700, ctx.currentTime, 1.2);
+  engine.drumBus.gain.setTargetAtTime(drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 : 0, ctx.currentTime, 0.8);
+  engine.masterFilter.frequency.setTargetAtTime(950 + smoothedAct * 1700, ctx.currentTime, 1.2);
 
   setChip('wpmChip', String(Math.round((keyTimes.length / 5) * (60 / 12))));
   const bars = Math.round(smoothedAct * 5);
@@ -697,7 +268,7 @@ function setStyle(name) {
   SPB = 60 / STYLE.bpm;
   P16 = SPB / 4;
   if (started) {
-    buildBed();
+    engine.buildBed();
     if (running) anchorTransport();  // re-anchor the grid at the new tempo
   }
 }
@@ -992,11 +563,11 @@ if (claudeChk) claudeChk.addEventListener('change', e => {
 });
 const volRange = $('volRange');
 if (volRange) volRange.addEventListener('input', () => {
-  if (masterGain) masterGain.gain.setTargetAtTime(volLevel(), ctx.currentTime, 0.1);
+  if (engine) engine.setVolume(volLevel());
 });
 const crackleRange = $('crackleRange');
 if (crackleRange) crackleRange.addEventListener('input', () => {
-  if (crackleGain) crackleGain.gain.setTargetAtTime(cracLevel(), ctx.currentTime, 0.2);
+  if (engine) engine.setCrackle(cracLevel());
 });
 
 /* ---------- recording ---------- */
@@ -1135,6 +706,17 @@ if (viz) {
 /* honor a pre-selected style if the select was set before engine load */
 if (styleSel && styleSel.value && styleSel.value !== 'lofi') setStyle(styleSel.value);
 
-return { connectStream, enqueueClaude };
+/* introspection for tests and debugging — no audio side effects */
+function debug() {
+  return {
+    started, running,
+    ctxState: ctx ? ctx.state : null,
+    now: ctx ? ctx.currentTime : null,
+    slot, style: STYLE.title, sampled: sampler.ok,
+    act: Math.round(smoothedAct * 100) / 100,
+    vizCount: vizNotes.length,
+  };
+}
 
-})();
+window.KS = { connectStream, enqueueClaude, handleChar, debug };
+export { connectStream, enqueueClaude, debug };
