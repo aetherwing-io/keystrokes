@@ -212,9 +212,16 @@ function chordAt(slotIdx) {
 }
 function bassOf(chord) { return 36 + ((chord.root + keyOff) % 12); }
 function allowedPcs(chord, tier) {
-  const s = new Set(chord.tones.map(pc => (pc + keyOff) % 12));
+  const chordPcs = new Set(chord.tones.map(pc => (pc + keyOff) % 12));
+  const s = new Set(chordPcs);
   if (tier >= 1) PENT.forEach(pc => s.add((pc + keyOff) % 12));
-  if (tier >= 2) DIA.forEach(pc => s.add((pc + keyOff) % 12));
+  if (tier >= 2) {
+    DIA.forEach(pc => {
+      const tpc = (pc + keyOff) % 12;
+      // avoid-note rule: a diatonic tone one semitone above a chord tone clashes
+      if (!chordPcs.has((tpc + 11) % 12)) s.add(tpc);
+    });
+  }
   return s;
 }
 function snapMidi(m, pcs) {
@@ -286,11 +293,17 @@ function leadVoice(midi, vel, when, tier) {
     case 'pulse':   return playPulse(midi, vel, when, tier);
     case 'saw':     return playSawLead(midi, vel, when, tier);
     case 'kalimba': return playKalimba(midi, vel, when);
-    default:        return rhodesNote(midi, vel, when, { tier, dur: 0.95 + tier * 0.25, cutoff: 1900, gainMul: 0.62 });
+    default:        return rhodesNote(midi, vel, when, {
+      tier, dur: 0.95 + tier * 0.25,
+      cutoff: 1250 + 1000 * leadLevel(),   // pulls the melody back into the haze
+      gainMul: 0.55,
+    });
   }
 }
+const leadLevel = () => val('leadRange', 45) / 100;
 function playMelody(midi, vel, when, tier) {
   midi += STYLE.leadOct;
+  vel *= 0.5 + 0.7 * leadLevel();   // the Lead control: how far forward the melody sits
   leadVoice(midi, vel, when, tier);
   if (section === 'chorus' && vel > 0.3) {
     leadVoice(midi + 12, vel * 0.6, when + 0.02, tier);   // the chorus doubles up an octave
@@ -535,6 +548,8 @@ function setStyle(name) {
   STYLE = STYLES[name] || STYLES.lofi;
   SPB = 60 / STYLE.bpm;
   P16 = SPB / 4;
+  combo = 0; comboTier = 0;
+  setChip('comboChip', '·');
   if (started) {
     engine.buildBed();
     if (running) anchorTransport();  // re-anchor the grid at the new tempo
@@ -624,16 +639,17 @@ function handleChar(ch, shift) {
     const rootPc = (chord.root + keyOff) % 12;
     let m = 60 + rootPc; if (m < 58) m += 12;
     m += CADENCE[ch];
-    playMelody(m, ch === '!' ? 0.7 : 0.45, t + count * 0.033, 0);
+    playMelody(m, ch === '!' ? 0.6 : 0.4, t + count * 0.033, 0);
     slotNotes.set(n, count + 1);
     lastWasBoundary = true;
     lastUserMidi = m; lastUserNoteAt = now;
     pushViz(m, 0, 0.5, 'note');
     if (ch === '?' && claudeOn && claudeQueue.length === 0) {
-      // a question deserves an answer: 9th, down to the 7th, home
+      // a question deserves an answer: 9th, down through the (chord's own) 7th, home
       const base = 72 + rootPc;
-      playClaude(base + 14, 0.4, t + SPB);
-      playClaude(base + 11, 0.35, t + SPB * 1.5);
+      const pcs = allowedPcs(chord, 2);
+      playClaude(snapMidi(base + 14, pcs), 0.4, t + SPB);
+      playClaude(snapMidi(base + 10, pcs), 0.35, t + SPB * 1.5);
       playClaude(base + 12, 0.45, t + SPB * 2);
       pushViz(base + 14, 1, 0.4, 'claude');
       pushViz(base + 12, 1, 0.4, 'claude');
@@ -680,14 +696,14 @@ function handleChar(ch, shift) {
   } else {
     midi = geoMidi(ch, true);
     if (midi == null) return;
-    midi = clamp(midi, 45, 88);
+    midi = clamp(midi, 50, 88);
     midi = snapMidi(midi, allowedPcs(chord, tier));
   }
 
-  let vel = 0.42;
-  if (wordInitial) vel += 0.16;
-  if (shift) vel += 0.14;
-  if (!wordInitial && tier === 0 && !shift) vel = 0.12 + d * 0.22;
+  let vel = 0.36;
+  if (wordInitial) vel += 0.13;
+  if (shift) vel += 0.12;
+  if (!wordInitial && tier === 0 && !shift) vel = 0.10 + d * 0.18;
   if (iki < 90) vel *= 0.88;
 
   playMelody(midi, vel, t + count * 0.033, tier);

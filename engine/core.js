@@ -188,16 +188,18 @@ export function createAudioEngine(actx, opts) {
   }
 
   // one shared reverb: synthesized impulse, wet path runs through the master filter
-  const reverbSend = ctx.createGain(); reverbSend.gain.value = 0.16;
+  const reverbSend = ctx.createGain(); reverbSend.gain.value = 0.13;
   const convolver = ctx.createConvolver();
   {
     const len = Math.floor(ctx.sampleRate * 1.8);
     const ir = ctx.createBuffer(2, len, ctx.sampleRate);
     for (let ch = 0; ch < 2; ch++) {
       const d = ir.getChannelData(ch);
+      let y = 0;
       for (let i = 0; i < len; i++) {
         const t = i / ctx.sampleRate;
-        d[i] = (Math.random() * 2 - 1) * Math.exp(-t / 0.55) * 0.5;
+        y += 0.22 * ((Math.random() * 2 - 1) - y);   // darkened tail — a warm room, not a stairwell
+        d[i] = y * Math.exp(-t / 0.55) * 1.6;
       }
     }
     convolver.buffer = ir;
@@ -238,7 +240,7 @@ export function createAudioEngine(actx, opts) {
       src.connect(lp); lp.connect(hp); hp.connect(g); g.connect(crackleGain);
       src.start(when); bedSources.push(src);
     };
-    const popLayer = (count, bright, gain) => {
+    const popLayer = (count, type, freq, gain) => {
       const len = ctx.sampleRate * 4;
       const pb = ctx.createBuffer(1, len, ctx.sampleRate);
       const pd = pb.getChannelData(0);
@@ -253,8 +255,7 @@ export function createAudioEngine(actx, opts) {
       const pops = ctx.createBufferSource();
       pops.buffer = pb; pops.loop = true;
       const f = ctx.createBiquadFilter();
-      f.type = bright ? 'highpass' : 'lowpass';
-      f.frequency.value = bright ? 500 : 2800;
+      f.type = type; f.frequency.value = freq;
       const g = ctx.createGain(); g.gain.value = gain;
       pops.connect(f); f.connect(g); g.connect(crackleGain);
       pops.start(when); bedSources.push(pops);
@@ -263,12 +264,21 @@ export function createAudioEngine(actx, opts) {
     switch (opts.getStyle().bed) {
       case 'vinyl':
         noiseLayer(4200, 60, 0.012);
-        popLayer(42, true, 0.5);
+        popLayer(42, 'highpass', 500, 0.5);
         break;
-      case 'rain':
-        noiseLayer(2600, 400, 0.05);
-        popLayer(140, false, 0.35);   // soft droplets
+      case 'rain': {
+        // rain is HIGH: drops on glass hiss up around 2-8k, patter is bright and irregular
+        noiseLayer(7000, 1400, 0.045);
+        popLayer(220, 'highpass', 1800, 0.22);   // the patter
+        popLayer(45, 'highpass', 900, 0.42);     // closer, fatter drops
+        const gust = ctx.createOscillator();
+        gust.frequency.value = 0.07;              // slow swells, like wind driving the rain
+        const gustGain = ctx.createGain();
+        gustGain.gain.value = opts.getCrackle() * 0.35;
+        gust.connect(gustGain); gustGain.connect(crackleGain.gain);
+        gust.start(when); bedSources.push(gust);
         break;
+      }
       case 'hiss':
       default:
         noiseLayer(6000, 100, 0.014);
@@ -308,7 +318,8 @@ export function createAudioEngine(actx, opts) {
     const g = ctx.createGain();
     const peak = Math.pow(vel, 1.25) * (o.gainMul ?? 1);
     const dur = o.dur ?? 1.4;
-    g.gain.setValueAtTime(peak, when);
+    g.gain.setValueAtTime(peak * 0.35, when);          // round the attack — felt, not struck
+    g.gain.linearRampToValueAtTime(peak, when + 0.015);
     g.gain.setValueAtTime(peak, when + dur * 0.55);
     g.gain.linearRampToValueAtTime(0.0001, when + dur);
 
