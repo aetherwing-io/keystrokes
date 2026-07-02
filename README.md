@@ -64,6 +64,29 @@ and background texture — while your keys keep steering:
 letters first (the least informative notes) down to ghosts or rests.
 Typing into the pad auto-starts the tape — no button needed.
 
+## Telemetry you can feel
+
+The local version doesn't just hear characters — it hears the *work*. Tool
+activity in your Claude sessions becomes musical punctuation:
+
+- a **Bash command running** is a low tape-motor rumble that stops when it exits
+- an **error** brings in a suspended chord that *holds* until the next success
+  resolves it onto the third — you can hear an unfixed build
+- **tests** ring a two-note bell when they pass, scratch when they fail
+- a **git commit** gets the full treatment: drum fill, tape splice, V→I cadence
+- **file edits** stamp three quick ascending notes; **web fetches** sweep like
+  a radio tuning
+
+Anything else on your machine can join via the hub's event endpoint — e.g. a
+git `post-commit` hook (in any repo: `.git/hooks/post-commit`, `chmod +x`):
+
+```sh
+#!/bin/sh
+curl -s -XPOST localhost:8123/event -d '{"kind":"commit"}' >/dev/null 2>&1 || true
+```
+
+The "Telemetry" checkbox on the live page mutes all of it.
+
 Engine behavior worth knowing:
 
 - **Your voice** drives everything: drums and brightness follow *your*

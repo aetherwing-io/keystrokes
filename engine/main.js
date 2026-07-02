@@ -250,6 +250,12 @@ function tick() {
     cc.classList.toggle('on', claudeQueue.length > 0);
   }
 
+  // a Bash rumble that never got its result: fade out after 45s
+  if (pendingBash > 0 && performance.now() - rumbleStartedAt > 45000) {
+    pendingBash = 0;
+    setRumble(false);
+  }
+
   for (const k of slotNotes.keys()) if (k < slot - 8) slotNotes.delete(k);
 }
 
@@ -456,6 +462,136 @@ function drainClaude() {
   setTimeout(drainClaude, delay);
 }
 
+/* ---------- telemetry: the sound of the workshop ----------
+ * Tool activity from Claude sessions (and POST /event externals) becomes
+ * musical punctuation: builds rumble, errors hold harmonic tension until
+ * the next success resolves it, commits get a full cadence.
+ */
+let telemetryOn = true;
+let telemCount = 0;
+let pendingBash = 0, rumble = null, rumbleStartedAt = 0;
+const erroredFiles = new Set();
+let tensionDrone = null;
+
+function rootPcNow() { return (chordAt(slot).root + keyOff) % 12; }
+function nextBarTime() {
+  const barLen = 16 * P16;
+  let n = Math.ceil((ctx.currentTime + 0.02 - t0) / barLen);
+  if (n < 1) n = 1;
+  return t0 + n * barLen;
+}
+function setRumble(on) {
+  if (!rumble) {
+    const src = ctx.createBufferSource();
+    src.buffer = engine.noiseBuf; src.loop = true;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 240;
+    const g = ctx.createGain(); g.gain.value = 0;
+    src.connect(lp); lp.connect(g); g.connect(engine.masterFilter);
+    src.start();
+    rumble = g;
+  }
+  rumble.gain.setTargetAtTime(on ? 0.02 : 0, ctx.currentTime, on ? 0.5 : 0.3);
+}
+function okTickSound() {
+  playKalimba(91, 0.13, ctx.currentTime + 0.02);
+}
+function tensionEnter(f) {
+  erroredFiles.add(f || '?');
+  pushViz(96, 2, 0.6, 'telem');
+  if (tensionDrone) return;
+  const root = 48 + rootPcNow();
+  const g = ctx.createGain(); g.gain.value = 0;
+  g.connect(engine.masterFilter);
+  const oscs = [root + 5, root + 7, root + 12].map(m => {   // the sus4 that wants resolving
+    const o = ctx.createOscillator();
+    o.type = 'sine'; o.frequency.value = mtof(m);
+    engine.wobble.connect(o.detune);
+    o.connect(g); o.start();
+    return o;
+  });
+  g.gain.setTargetAtTime(0.05, ctx.currentTime, 1.2);
+  tensionDrone = { g, oscs, root };
+}
+function tensionResolve(f) {
+  erroredFiles.delete(f || '?');
+  if (erroredFiles.size > 0 || !tensionDrone) return;
+  const { g, oscs, root } = tensionDrone;
+  tensionDrone = null;
+  const now = ctx.currentTime;
+  g.gain.setTargetAtTime(0.0001, now, 0.4);
+  oscs.forEach(o => o.stop(now + 2));
+  playMelody(root + 16, 0.4, now + 0.1, 0);   // sus4 settles onto the third
+  playClaude(root + 28, 0.3, now + 0.25);
+  pushViz(root + 16, 1, 0.5, 'telem');
+}
+function commitCadence() {
+  const t = nextBarTime();
+  const rootPc = rootPcNow();
+  snareDust(t - 3 * P16, 0.5); snareDust(t - 2 * P16, 0.6); snareDust(t - P16, 0.7);
+  playScratch(t - 0.06);                        // the tape splice
+  bassHit(36 + ((rootPc + 7) % 12), 0.5, t - 2 * P16, { dur: 0.4 });
+  bassHit(36 + rootPc, 0.6, t);                 // V → I, work committed
+  voicingOf(chordAt(slot)).forEach((m, i) => playStabTone(m, 0.3, t + i * 0.02));
+  pushViz(36 + rootPc, 0, 0.8, 'telem');
+}
+function testBell(ok) {
+  const now = ctx.currentTime + 0.05;
+  const root = 72 + rootPcNow();
+  if (ok) { playClaude(root + 7, 0.4, now); playClaude(root + 12, 0.45, now + 0.16); }
+  else playScratch(now);
+  pushViz(root, ok ? 1 : 2, 0.5, 'telem');
+}
+function stampNotes() {
+  const now = ctx.currentTime + 0.03;
+  const root = 76 + rootPcNow();
+  [0, 4, 7].forEach((iv, i) => playPulse(root + iv, 0.18, now + i * 0.06, 0));
+  pushViz(root, 1, 0.3, 'telem');
+}
+function radioBlip() {
+  const now = ctx.currentTime + 0.02;
+  const src = ctx.createBufferSource(); src.buffer = engine.noiseBuf;
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 6;
+  bp.frequency.setValueAtTime(300, now);
+  bp.frequency.exponentialRampToValueAtTime(3200, now + 0.25);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.linearRampToValueAtTime(0.06, now + 0.03);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
+  src.connect(g); g.connect(bp); bp.connect(engine.masterFilter);
+  src.start(now); src.stop(now + 0.35);
+  pushViz(88, 1, 0.3, 'telem');
+}
+
+function handleTelemetry(msg) {
+  if (!telemetryOn || !running) return;
+  telemCount++;
+  if (msg.src === 'ext') {
+    if (msg.kind === 'commit') commitCadence();
+    else if (msg.ok === false) tensionEnter('ext:' + msg.kind);
+    else okTickSound();
+    return;
+  }
+  const base = String(msg.tool || '').replace(/^mcp__.*__/, '');
+  if (msg.phase === 'start') {
+    if (base === 'Bash') { pendingBash++; rumbleStartedAt = performance.now(); setRumble(true); }
+    else if (base === 'Write' || base === 'Edit' || base === 'NotebookEdit') stampNotes();
+    else if (base === 'WebFetch' || base === 'WebSearch') radioBlip();
+    return;
+  }
+  if (base === 'Bash') {
+    pendingBash = Math.max(0, pendingBash - 1);
+    if (!pendingBash) setRumble(false);
+  }
+  if (msg.commit && msg.ok) { commitCadence(); return; }
+  if (msg.test) {
+    testBell(msg.ok);
+    if (!msg.ok) tensionEnter(msg.f); else tensionResolve(msg.f);
+    return;
+  }
+  if (!msg.ok) tensionEnter(msg.f);
+  else { tensionResolve(msg.f); okTickSound(); }
+}
+
 /* ---------- SSE stream (live.html only calls this) ---------- */
 function connectStream() {
   const es = new EventSource('/events');
@@ -467,6 +603,7 @@ function connectStream() {
   es.onmessage = ev => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.kind === 'tool' || msg.src === 'ext') { handleTelemetry(msg); return; }
     if (msg.src === 'you' && typeof msg.ch === 'string') {
       tapLive = true;
       setChip('tapChip', 'live');
@@ -685,6 +822,12 @@ if (viz) {
       if (nn.kind === 'perc') {
         vctx.fillStyle = 'rgba(138,123,108,' + (alpha * 0.7).toFixed(3) + ')';
         vctx.fillRect(x - 2, y - 2, 4, 4);
+      } else if (nn.kind === 'telem') {
+        vctx.save();
+        vctx.translate(x, y); vctx.rotate(Math.PI / 4);
+        vctx.fillStyle = 'rgba(226,166,91,' + (alpha * 0.9).toFixed(3) + ')';
+        vctx.fillRect(-3, -3, 6, 6);
+        vctx.restore();
       } else if (nn.kind === 'claude') {
         vctx.beginPath();
         vctx.arc(x, y, 2.5 + nn.vel * 5, 0, Math.PI * 2);
@@ -715,8 +858,20 @@ function debug() {
     slot, style: STYLE.title, sampled: sampler.ok,
     act: Math.round(smoothedAct * 100) / 100,
     vizCount: vizNotes.length,
+    telem: telemCount, tension: erroredFiles.size, pendingBash,
   };
 }
 
-window.KS = { connectStream, enqueueClaude, handleChar, debug };
+const telemChk = $('telemChk');
+if (telemChk) telemChk.addEventListener('change', e => {
+  telemetryOn = e.target.checked;
+  if (!telemetryOn) {
+    pendingBash = 0;
+    if (rumble) setRumble(false);
+    erroredFiles.clear();
+    if (tensionDrone) tensionResolve();
+  }
+});
+
+window.KS = { connectStream, enqueueClaude, handleChar, handleTelemetry, debug };
 export { connectStream, enqueueClaude, debug };

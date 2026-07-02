@@ -54,6 +54,26 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, listeners: clients.size }));
     return;
   }
+  if (u === '/event' && req.method === 'POST') {
+    // generic external event intake (e.g. a git post-commit hook):
+    //   curl -s -XPOST localhost:8123/event -d '{"kind":"commit"}'
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', () => {
+      try {
+        const j = JSON.parse(body);
+        broadcast({
+          src: 'ext',
+          kind: String(j.kind || 'event').slice(0, 24),
+          ok: j.ok !== false,
+          label: typeof j.label === 'string' ? j.label.slice(0, 64) : undefined,
+        });
+      } catch { /* malformed body — ignore */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    return;
+  }
   let file = null, type = null;
   if (STATIC[u]) {
     [file, type] = STATIC[u];
@@ -114,18 +134,51 @@ for (const f of listJsonl(WATCH)) {
   try { offsets.set(f, fs.statSync(f).size); } catch { /* vanished */ }
 }
 
-function extractClaude(line) {
+/* tool telemetry: pair tool_use (assistant lines) with tool_result (user lines)
+ * so the engine can hear starts, successes, errors, tests, and commits. */
+const pendingTools = new Map();   // fileKey -> Map(tool_use_id -> {name, cmd})
+let lastTelemAt = 0;
+const TELEM_MIN_GAP = 250;        // ms between low-priority telemetry events
+
+function extractEvents(line, fkey) {
   let obj;
   try { obj = JSON.parse(line); } catch { return []; }
-  if (obj.type !== 'assistant' || !obj.message || !Array.isArray(obj.message.content)) return [];
   const events = [];
-  for (const item of obj.message.content) {
-    if (item.type === 'text' && typeof item.text === 'string' && item.text.trim()) {
-      events.push({ src: 'claude', text: item.text.slice(0, 1500), code: false });
-    } else if (item.type === 'tool_use' && item.input && typeof item.input === 'object') {
-      const t = item.input.new_string ?? item.input.content ?? item.input.command ?? '';
-      if (typeof t === 'string' && t.trim()) {
-        events.push({ src: 'claude', text: t.slice(0, 1200), code: true });
+  if (obj.type === 'assistant' && obj.message && Array.isArray(obj.message.content)) {
+    for (const item of obj.message.content) {
+      if (item.type === 'text' && typeof item.text === 'string' && item.text.trim()) {
+        events.push({ src: 'claude', text: item.text.slice(0, 1500), code: false });
+      } else if (item.type === 'tool_use' && item.input && typeof item.input === 'object') {
+        const t = item.input.new_string ?? item.input.content ?? item.input.command ?? '';
+        if (typeof t === 'string' && t.trim()) {
+          events.push({ src: 'claude', text: t.slice(0, 1200), code: true });
+        }
+        if (item.id && item.name) {
+          let m = pendingTools.get(fkey);
+          if (!m) { m = new Map(); pendingTools.set(fkey, m); }
+          m.set(item.id, {
+            name: item.name,
+            cmd: typeof item.input.command === 'string' ? item.input.command : '',
+          });
+          if (m.size > 40) m.delete(m.keys().next().value);
+          events.push({ src: 'claude', kind: 'tool', phase: 'start', tool: item.name, f: fkey });
+        }
+      }
+    }
+  } else if (obj.type === 'user' && obj.message && Array.isArray(obj.message.content)) {
+    for (const item of obj.message.content) {
+      if (item && item.type === 'tool_result' && item.tool_use_id) {
+        const m = pendingTools.get(fkey);
+        const info = m && m.get(item.tool_use_id);
+        if (!info) continue;
+        m.delete(item.tool_use_id);
+        const isBash = info.name === 'Bash' || /(^|__)bash$/i.test(info.name);
+        events.push({
+          src: 'claude', kind: 'tool', phase: 'end', tool: info.name, f: fkey,
+          ok: item.is_error !== true,
+          test: isBash && /\btest\b/i.test(info.cmd),
+          commit: isBash && /\bgit commit\b/.test(info.cmd),
+        });
       }
     }
   }
@@ -154,12 +207,23 @@ function flushFile(f) {
   const lines = chunk.split('\n');
   partials.set(f, lines.pop() || '');
 
+  const fkey = path.basename(f, '.jsonl').slice(0, 8);
   let emitted = 0;
   for (const line of lines) {
     if (!line.trim()) continue;
-    for (const ev of extractClaude(line)) {
-      broadcast(ev);
-      if (++emitted >= 30) return;   // one flush shouldn't flood the queue
+    for (const ev of extractEvents(line, fkey)) {
+      if (ev.kind === 'tool') {
+        // errors, tests, and commits always pass; routine start/ok ticks are throttled
+        const important = ev.phase === 'end' && (!ev.ok || ev.test || ev.commit);
+        const now = Date.now();
+        if (!important && now - lastTelemAt < TELEM_MIN_GAP) continue;
+        lastTelemAt = now;
+        broadcast(ev);
+      } else {
+        if (emitted >= 30) continue;   // one flush shouldn't flood the char queue
+        emitted++;
+        broadcast(ev);
+      }
     }
   }
 }
