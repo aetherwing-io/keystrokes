@@ -91,8 +91,9 @@
     <span class="l0">chord tone (common letters)</span>
     <span class="l1">pentatonic (mid)</span>
     <span class="l2">color tone (rare letters)</span>
+    <span><a href="shelf.html" style="color: var(--amber)">your shelf →</a></span>
   </div>
-  <span class="privacy">Runs entirely in your browser. Your text never leaves the page, and nothing is stored.</span>
+  <span class="privacy">Runs entirely in your browser. Your text never leaves the page; each session's <em>notes</em> are taped to this browser so you can replay them from the shelf.</span>
 </footer>
 
 <div class="promo">
@@ -103,6 +104,9 @@
   <a href="https://github.com/aetherwing-io/keystrokes">get keystrokes on GitHub</a>.
 </div>
 
-<script type="module" src="engine/main.js"></script>
+<script type="module">
+  import { enableJournal } from './engine/main.js';
+  enableJournal('idb');
+</script>
 </body>
 </html>

@@ -27,6 +27,7 @@
     <span>sound <b id="soundChip">loading…</b></span>
     <span class="src">keys <b id="tapChip">waiting</b></span>
     <span class="src">claude <b id="claudeChip">quiet</b></span>
+    <span class="src">tape <b id="journalChip">off</b></span>
   </div>
 
   <textarea id="pad" spellcheck="false" autocomplete="off" autofocus
@@ -90,12 +91,14 @@
   <div class="legend">
     <span class="you">your keys (solid)</span>
     <span class="claude">claude's characters (outlined)</span>
+    <span><a href="/shelf" style="color: var(--amber)">the shelf →</a></span>
   </div>
-  <span class="privacy">Everything stays on this machine. Keys become notes and are discarded — nothing is logged.</span>
+  <span class="privacy">Keys become notes and are discarded — your text is never stored. Sound events are taped locally to ~/.keystrokes for the shelf.</span>
 </footer>
 
 <script type="module">
-  import { connectStream } from './engine/main.js';
+  import { connectStream, enableJournal } from './engine/main.js';
+  enableJournal('hub');
   connectStream();
 </script>
 </body>

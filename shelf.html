@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keystrokes Shelf — the album of your work</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📼</text></svg>">
+<style>
+  .shelf { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .cassette {
+    background: var(--shell); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 22px; display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
+  }
+  .cassette canvas { width: 240px; height: 120px; background: #0e0b09; border: 1px solid var(--line); border-radius: 5px; }
+  .cassette .info { flex: 1; min-width: 220px; }
+  .cassette h2 { font-family: var(--font-display); font-weight: 400; font-size: 17px; letter-spacing: .06em; margin: 0 0 6px; }
+  .cassette .meta { font-family: var(--font-mono); font-size: 12px; color: var(--dim); }
+  .cassette .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .cassette .status { font-family: var(--font-mono); font-size: 12px; color: var(--amber); }
+  .cassette .range { display: flex; gap: 6px; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+  .cassette .range input { width: 54px; background: var(--well); color: var(--paper); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font-family: var(--font-mono); }
+  .btn.danger.armed { border-color: var(--rose); color: var(--rose); }
+  .empty { color: var(--dim); text-align: center; padding: 60px 20px; font-size: 14px; }
+  header.pagehead { max-width: 860px; margin: 0 auto 20px; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header.pagehead .backlink { margin-left: auto; }
+  header.pagehead a { color: var(--amber); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header class="pagehead">
+  <h1>THE SHELF<span class="cursor">_</span></h1>
+  <span class="tagline">every session is a tape · <b id="backendChip">…</b></span>
+  <span class="backlink"><a href="./" id="backLink">← back to the deck</a></span>
+</header>
+
+<div class="shelf" id="shelf">
+  <div class="empty" id="emptyMsg">Looking for tapes…</div>
+</div>
+
+<footer>
+  <span>Renders are re-performances from the score — the notes are exact, the tape jitter is fresh each time.</span>
+  <span class="privacy" id="privacyNote"></span>
+</footer>
+
+<script type="module">
+import {
+  STYLES, createAudioEngine, fetchSamplePack, makeSampler, decodeSamplerInto, clamp,
+} from './engine/core.js';
+import { idbOpen, idbSessions, idbSessionEvents, idbDelete } from './engine/idb.js';
+
+const $ = id => document.getElementById(id);
+const rawPack = fetchSamplePack();
+const RENDER_CAP_S = 45 * 60;
+const TIER_COLORS = ['#e2a65b', '#8fbdad', '#ce8398'];
+const DRUM_EVENTS = new Set(['kick', 'snare', 'ckick', 'csnare', 'rkick', 'gsnare', 'shaker', 'rim', 'hat', 'scratch']);
+const DUR_DEFAULT = {
+  rhodes: 1.5, saw: 0.75, pulse: 0.32, kalimba: 1.8, claude: 1.35, osc: 1.2,
+  stab: 2.75, bass: 0.95, kick: 0.35, snare: 0.3, ckick: 0.2, csnare: 0.15,
+  rkick: 0.35, gsnare: 0.25, shaker: 0.15, rim: 0.06, scratch: 0.15,
+};
+const durOf = ev =>
+  ev.e === 'pad' ? (ev.d || 4) :
+  ev.e === 'hat' ? (ev.open ? 0.4 : 0.08) :
+  (ev.o && ev.o.dur) || DUR_DEFAULT[ev.e] || 0.5;
+
+let backend = 'idb', db = null;
+
+async function loadList() {
+  let list = [];
+  try {
+    const r = await fetch('/sessions', { signal: AbortSignal.timeout(1500) });
+    if (r.ok) { backend = 'hub'; list = await r.json(); }
+  } catch { /* no hub — browser storage it is */ }
+  if (backend === 'idb') {
+    db = await idbOpen();
+    list = (await idbSessions(db)).map(m => ({
+      id: m.sid, startedWall: m.startedWall,
+      style: (m.header && m.header.style) || 'lofi',
+      duration: m.lastT || 0, events: m.events || 0,
+    }));
+  }
+  $('backendChip').textContent = backend === 'hub' ? 'from ~/.keystrokes' : 'from this browser';
+  $('privacyNote').textContent = backend === 'hub'
+    ? 'Tapes live in ~/.keystrokes/sessions on this machine.'
+    : 'Tapes live in this browser and never leave it.';
+  $('backLink').href = backend === 'hub' ? '/' : './';
+  render(list);
+}
+
+async function loadSession(id) {
+  if (backend === 'hub') {
+    const text = await (await fetch('/sessions/' + id)).text();
+    const lines = text.split('\n').filter(l => l.trim());
+    let header = null; const events = [];
+    for (const l of lines) {
+      try {
+        const o = JSON.parse(l);
+        if (o.e === 'hdr') header = o; else events.push(o);
+      } catch { /* skip bad line */ }
+    }
+    return { header: header || {}, events };
+  }
+  const metas = await idbSessions(db);
+  const meta = metas.find(m => m.sid === id);
+  return { header: (meta && meta.header) || {}, events: await idbSessionEvents(db, id) };
+}
+
+function title(item) {
+  const d = item.startedWall ? new Date(item.startedWall) : null;
+  const day = d ? d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : item.id;
+  const time = d ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
+  const mins = Math.max(1, Math.round((item.duration || 0) / 60));
+  const styleTitle = (STYLES[item.style] || STYLES.lofi).title.toLowerCase();
+  return `${day} · ${time} · ${mins} min · ${styleTitle}`;
+}
+
+function drawCover(canvas, events, duration) {
+  const W = canvas.width = 480, H = canvas.height = 240;
+  const c = canvas.getContext('2d');
+  c.fillStyle = '#0e0b09'; c.fillRect(0, 0, W, H);
+  const dur = Math.max(duration, 1);
+  for (const ev of events) {
+    if (typeof ev.t !== 'number') continue;
+    const x = (ev.t / dur) * (W - 16) + 8;
+    if (DRUM_EVENTS.has(ev.e)) {
+      c.fillStyle = 'rgba(138,123,108,0.25)';
+      c.fillRect(x, H - 18 + (ev.e.charCodeAt(0) % 10), 2, 2);
+      continue;
+    }
+    if (typeof ev.m !== 'number') continue;
+    const y = H - 24 - ((clamp(ev.m, 36, 96) - 36) / 60) * (H - 44);
+    if (ev.e === 'claude') {
+      c.strokeStyle = 'rgba(143,189,173,0.5)';
+      c.strokeRect(x - 1.5, y - 1.5, 3, 3);
+    } else {
+      const tier = (ev.o && ev.o.tier) ?? ev.x ?? 1;
+      c.fillStyle = TIER_COLORS[Math.min(2, tier)] + '99';
+      c.fillRect(x - 1.5, y - 1.5, 3, 3);
+    }
+  }
+  c.fillStyle = 'rgba(234,224,208,0.35)';
+  c.font = '10px ui-monospace, monospace';
+  c.fillText('keystrokes', 10, H - 8);
+}
+
+async function renderAudio(events, header, rangeS, rangeE, onProgress) {
+  const s = Math.max(0, rangeS || 0);
+  const e = Math.min(rangeE ?? Infinity, s + RENDER_CAP_S);
+  const slice = events.filter(ev => typeof ev.t === 'number' && ev.t >= s - 15 && ev.t <= e);
+  let end = 0;
+  for (const ev of slice) end = Math.max(end, ev.t + durOf(ev));
+  const lenS = Math.min(end - s, RENDER_CAP_S) + 2;
+  if (lenS <= 2) throw new Error('nothing in range');
+
+  const off = new OfflineAudioContext(2, Math.ceil(lenS * 44100), 44100);
+  const sampler = makeSampler();
+  await decodeSamplerInto(off, sampler, rawPack);
+  const st = { style: STYLES[header.style] || STYLES.lofi };
+  const eng = createAudioEngine(off, {
+    sampler,
+    getStyle: () => st.style,
+    getCrackle: () => ((header.crackle ?? 45) / 100) * 0.16,
+  });
+  eng.buildBed(0);
+
+  const V = eng.voices;
+  let i = 0;
+  for (const ev of slice) {
+    const T = Math.max(0, ev.t - s) + 0.05;
+    try { applyEvent(ev, eng, V, st, T); } catch { /* one bad event won't kill a render */ }
+    if (++i % 2000 === 0) {
+      onProgress(Math.round((i / slice.length) * 50));
+      await new Promise(r => setTimeout(r));
+    }
+  }
+  onProgress(60);
+  const buf = await off.startRendering();
+  onProgress(100);
+  {
+    // introspection for tests + honest "did this render silence?" checks
+    const d = buf.getChannelData(0);
+    let peak = 0, rms = 0, nSamp = 0;
+    for (let i = 0; i < d.length; i += 50) {
+      const a = Math.abs(d[i]);
+      if (a > peak) peak = a;
+      rms += d[i] * d[i]; nSamp++;
+    }
+    window.__lastRender = {
+      seconds: Math.round(buf.duration * 10) / 10,
+      peak: Math.round(peak * 1000) / 1000,
+      rms: Math.round(Math.sqrt(rms / nSamp) * 10000) / 10000,
+      events: slice.length,
+    };
+  }
+  return buf;
+}
+
+function applyEvent(ev, eng, V, st, T) {
+  switch (ev.e) {
+    case 'set':
+      if (ev.k === 'style') { st.style = STYLES[ev.val] || st.style; eng.buildBed(T); }
+      else if (ev.k === 'crackle') eng.setCrackleAt((ev.val / 100) * 0.16, T);
+      break;
+    case 'auto':
+      eng.drumBus.gain.setTargetAtTime(Math.pow(ev.a, 1.15) * 0.9, T, 0.8);
+      eng.masterFilter.frequency.setTargetAtTime(950 + ev.a * 1700 + (ev.ch ? 400 : 0), T, 1.2);
+      break;
+    case 'rhodes':  V.rhodesNote(ev.m, ev.v, T, ev.o || {}); break;
+    case 'pulse':   V.playPulse(ev.m, ev.v, T, ev.x); break;
+    case 'saw':     V.playSawLead(ev.m, ev.v, T, ev.x); break;
+    case 'kalimba': V.playKalimba(ev.m, ev.v, T); break;
+    case 'osc':     V.playMelodyOsc(ev.m, ev.v, T, ev.x); break;
+    case 'claude':  V.playClaude(ev.m, ev.v, T); break;
+    case 'stab':    V.playStabTone(ev.m, ev.v, T); break;
+    case 'pad':     V.playPadChord(ev.vc || [], T, ev.d || 4, !!ev.soft); break;
+    case 'bass':    V.bassHit(ev.m, ev.v, T, ev.o || {}); break;
+    case 'hat':     V.hatTick(T, ev.v, !!ev.open); break;
+    case 'kick':    V.kickBoom(T, ev.v); break;
+    case 'snare':   V.snareDust(T, ev.v); break;
+    case 'ckick':   V.chipKick(T, ev.v); break;
+    case 'csnare':  V.chipSnare(T, ev.v); break;
+    case 'rkick':   V.retroKick(T, ev.v); break;
+    case 'gsnare':  V.gatedSnare(T, ev.v); break;
+    case 'shaker':  V.shaker(T, ev.v); break;
+    case 'rim':     V.playRim(T, ev.v); break;
+    case 'scratch': V.playScratch(T); break;
+  }
+}
+
+function encodeWav(buf) {
+  const n = buf.length, sr = buf.sampleRate;
+  const ab = new ArrayBuffer(44 + n * 4);
+  const dv = new DataView(ab);
+  const wstr = (o, str) => { for (let i = 0; i < str.length; i++) dv.setUint8(o + i, str.charCodeAt(i)); };
+  wstr(0, 'RIFF'); dv.setUint32(4, 36 + n * 4, true); wstr(8, 'WAVE');
+  wstr(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 2, true);
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * 4, true); dv.setUint16(32, 4, true); dv.setUint16(34, 16, true);
+  wstr(36, 'data'); dv.setUint32(40, n * 4, true);
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  let o = 44;
+  for (let i = 0; i < n; i++) {
+    dv.setInt16(o, Math.max(-1, Math.min(1, L[i])) * 32767, true); o += 2;
+    dv.setInt16(o, Math.max(-1, Math.min(1, R[i])) * 32767, true); o += 2;
+  }
+  return new Blob([ab], { type: 'audio/wav' });
+}
+
+let playingSrc = null, playingCtx = null;
+
+function render(list) {
+  const shelf = $('shelf');
+  shelf.innerHTML = '';
+  if (!list.length) {
+    shelf.innerHTML = '<div class="empty">No tapes yet. Go type some music on the deck — sessions land here automatically.</div>';
+    return;
+  }
+  for (const item of list) {
+    const card = document.createElement('div');
+    card.className = 'cassette';
+    const durMin = (item.duration || 0) / 60;
+    card.innerHTML = `
+      <canvas></canvas>
+      <div class="info">
+        <h2>${title(item)}</h2>
+        <div class="meta">${(item.events || 0).toLocaleString()} sound events${item.peakEpm ? ' · peak ' + item.peakEpm + '/min' : ''}</div>
+        <div class="row">
+          <button class="btn play">▶ Render &amp; play</button>
+          <button class="btn wav" disabled>↓ WAV</button>
+          <button class="btn danger del">✕</button>
+          <span class="status"></span>
+        </div>
+        ${durMin > 45 ? `<div class="range">render <input type="number" class="rs" value="0" min="0"> to <input type="number" class="re" value="45" min="1"> min (45 max per render)</div>` : ''}
+      </div>`;
+    shelf.appendChild(card);
+
+    const status = card.querySelector('.status');
+    const playBtn = card.querySelector('.play');
+    const wavBtn = card.querySelector('.wav');
+    const delBtn = card.querySelector('.del');
+    let rendered = null, loaded = null;
+
+    playBtn.addEventListener('click', async () => {
+      if (playingSrc) { try { playingSrc.stop(); } catch { /* done */ } playingSrc = null; }
+      try {
+        playBtn.disabled = true;
+        status.textContent = 'loading…';
+        loaded ??= await loadSession(item.id);
+        drawCover(card.querySelector('canvas'), loaded.events, item.duration || 1);
+        const rs = card.querySelector('.rs'), re = card.querySelector('.re');
+        const s = rs ? (+rs.value || 0) * 60 : 0;
+        const e = re ? (+re.value || 45) * 60 : undefined;
+        status.textContent = 'rendering…';
+        rendered = await renderAudio(loaded.events, loaded.header, s, e,
+          p => { status.textContent = 'rendering… ' + p + '%'; });
+        wavBtn.disabled = false;
+        status.textContent = 'playing';
+        playingCtx ??= new AudioContext();
+        playingCtx.resume().catch(() => {});
+        const src = playingCtx.createBufferSource();
+        src.buffer = rendered;
+        src.connect(playingCtx.destination);
+        src.onended = () => { if (playingSrc === src) { status.textContent = ''; playingSrc = null; } };
+        src.start();
+        playingSrc = src;
+      } catch (err) {
+        status.textContent = String(err.message || err);
+      } finally {
+        playBtn.disabled = false;
+      }
+    });
+
+    wavBtn.addEventListener('click', () => {
+      if (!rendered) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(encodeWav(rendered));
+      a.download = 'keystrokes-' + item.id + '.wav';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    });
+
+    delBtn.addEventListener('click', async () => {
+      if (!delBtn.classList.contains('armed')) {
+        delBtn.classList.add('armed');
+        delBtn.textContent = 'sure?';
+        setTimeout(() => { delBtn.classList.remove('armed'); delBtn.textContent = '✕'; }, 3000);
+        return;
+      }
+      if (backend === 'hub') await fetch('/sessions/' + item.id, { method: 'DELETE' });
+      else await idbDelete(db, item.id);
+      card.remove();
+    });
+  }
+}
+
+loadList();
+</script>
+</body>
+</html>

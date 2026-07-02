@@ -7,6 +7,7 @@ import {
   STYLES, NOTE_NAMES, mtof, clamp,
   createAudioEngine, fetchSamplePack, makeSampler, decodeSamplerInto,
 } from './core.js';
+import { idbOpen, idbPutBatch, idbPrune } from './idb.js';
 
 /* ---------- mapping constants (live derivation only) ---------- */
 const DIA = [0, 2, 4, 5, 7, 9, 11];
@@ -80,6 +81,116 @@ let outroAtBar = -1;
 
 const sampler = makeSampler();
 const rawPack = fetchSamplePack();   // network fetch starts at page load
+
+/* ---------- journal: the session as a score ----------
+ * Every voice invocation is recorded as a resolved sound event — never a
+ * character, never a word. The shelf replays the score through the same
+ * voices in an OfflineAudioContext.
+ */
+let journalPref = null;              // 'hub' | 'idb' | null — set by the page
+let journal = null;
+let sessionEpoch = 0;
+const r2 = v => Math.round(v * 100) / 100;
+const r3 = v => Math.round(v * 1000) / 1000;
+
+function enableJournal(backend) { journalPref = backend; }
+
+function jrn(ev) {
+  if (!journal || !journal.on) return;
+  journal.buf.push(ev);
+  if (journal.buf.length >= 200) flushJournal();
+  if (journal.buf.length > 5000) journal.buf.splice(0, journal.buf.length - 5000);
+}
+function jrnSet(k, val) {
+  if (!journal || !journal.on || !ctx) return;
+  journal.buf.push({ t: r3(ctx.currentTime - sessionEpoch), e: 'set', k, val });
+}
+
+function styleKey() { return Object.keys(STYLES).find(k => STYLES[k] === STYLE) || 'lofi'; }
+
+function initJournal() {
+  sessionEpoch = ctx.currentTime;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:]/g, '-');
+  const sid = stamp + '-' + Math.random().toString(36).slice(2, 6);
+  journal = {
+    backend: journalPref, sid, seq: 0, buf: [], on: true, fails: 0, sentHeader: false,
+    header: {
+      v: 1, e: 'hdr', startedWall: Date.now(), style: styleKey(), key: keyOff,
+      bpm: STYLE.bpm, swing: val('swingRange', 15), density: val('densRange', 50),
+      crackle: val('crackleRange', 45), drums: drumsOn, claude: claudeOn,
+      mapping, sampleRate: ctx.sampleRate,
+    },
+  };
+  wrapVoicesForJournal();
+  setInterval(() => { if (journal.buf.length) flushJournal(); }, 3000);
+  window.addEventListener('pagehide', () => flushJournal(true));
+  setChip('journalChip', 'on');
+}
+
+function wrapVoicesForJournal() {
+  const T = w => r3(w - sessionEpoch);
+  const wrap = (fn, map) => (...a) => { jrn(map(...a)); return fn(...a); };
+  const drumMap = e => (w, v) => ({ t: T(w), e, v: r2(v) });
+  rhodesNote   = wrap(rhodesNote,   (m, v, w, o = {}) => ({ t: T(w), e: 'rhodes', m, v: r2(v),
+    o: { dur: o.dur, cutoff: o.cutoff, gainMul: o.gainMul, panBias: o.panBias, tier: o.tier } }));
+  playPulse    = wrap(playPulse,    (m, v, w, x) => ({ t: T(w), e: 'pulse', m, v: r2(v), x: x || 0 }));
+  playSawLead  = wrap(playSawLead,  (m, v, w, x) => ({ t: T(w), e: 'saw', m, v: r2(v), x: x || 0 }));
+  playKalimba  = wrap(playKalimba,  (m, v, w) => ({ t: T(w), e: 'kalimba', m, v: r2(v) }));
+  playMelodyOsc = wrap(playMelodyOsc, (m, v, w, x) => ({ t: T(w), e: 'osc', m, v: r2(v), x: x || 0 }));
+  playClaude   = wrap(playClaude,   (m, v, w) => ({ t: T(w), e: 'claude', m, v: r2(v) }));
+  playStabTone = wrap(playStabTone, (m, v, w) => ({ t: T(w), e: 'stab', m, v: r2(v) }));
+  playPadChord = wrap(playPadChord, (vc, w, d, soft) => ({ t: T(w), e: 'pad', vc, d: r2(d), soft: soft ? 1 : 0 }));
+  bassHit      = wrap(bassHit,      (m, v, w, o = {}) => ({ t: T(w), e: 'bass', m, v: r2(v),
+    o: { wave: o.wave, cutoff: o.cutoff, dur: o.dur } }));
+  hatTick      = wrap(hatTick,      (w, v, open) => ({ t: T(w), e: 'hat', v: r2(v), open: open ? 1 : 0 }));
+  kickBoom     = wrap(kickBoom,     drumMap('kick'));
+  snareDust    = wrap(snareDust,    drumMap('snare'));
+  chipKick     = wrap(chipKick,     drumMap('ckick'));
+  chipSnare    = wrap(chipSnare,    drumMap('csnare'));
+  retroKick    = wrap(retroKick,    drumMap('rkick'));
+  gatedSnare   = wrap(gatedSnare,   drumMap('gsnare'));
+  shaker       = wrap(shaker,       drumMap('shaker'));
+  playRim      = wrap(playRim,      drumMap('rim'));
+  playScratch  = wrap(playScratch,  w => ({ t: T(w), e: 'scratch' }));
+}
+
+let idbHandle = null;
+async function flushJournal(final) {
+  if (!journal || !journal.on || !journal.buf.length) return;
+  const events = journal.buf.splice(0);
+  const seq = ++journal.seq;
+  const payload = {
+    sid: journal.sid, seq,
+    header: journal.sentHeader ? undefined : journal.header,
+    events,
+  };
+  try {
+    if (journal.backend === 'hub') {
+      if (final && navigator.sendBeacon) {
+        navigator.sendBeacon('/journal', new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+        return;
+      }
+      const r = await fetch('/journal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (j.full) { journal.on = false; setChip('journalChip', 'full'); return; }
+      if (!j.ok) throw new Error('journal rejected');
+    } else {
+      idbHandle ??= await idbOpen();
+      await idbPutBatch(idbHandle, journal.sid, journal.header, events);
+      if (seq % 20 === 0) idbPrune(idbHandle).catch(() => {});
+    }
+    journal.sentHeader = true;
+    journal.fails = 0;
+  } catch {
+    journal.seq--;
+    journal.buf.unshift(...events.slice(-2000));
+    if (++journal.fails > 5) { journal.on = false; setChip('journalChip', 'off'); }
+  }
+}
 
 const $ = id => document.getElementById(id);
 const setChip = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
@@ -165,6 +276,7 @@ function initAudio() {
   decodeSamplerInto(ctx, sampler, rawPack).then(ok => {
     setChip('soundChip', ok ? 'sampled' : 'synth');
   });
+  if (journalPref) initJournal();
 }
 
 /* ---------- melody dispatch ---------- */
@@ -375,6 +487,18 @@ function tick() {
   engine.drumBus.gain.setTargetAtTime(drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 : 0, ctx.currentTime, 0.8);
   engine.masterFilter.frequency.setTargetAtTime(
     950 + smoothedAct * 1700 + (section === 'chorus' ? 400 : 0), ctx.currentTime, 1.2);
+
+  // journal the activity automation — offline renders need the drum/filter curve
+  if (journal && journal.on) {
+    const aEff = r2(drumsOn ? smoothedAct : 0);
+    const tNow = ctx.currentTime - sessionEpoch;
+    if (journal.lastAutoA === undefined ||
+        Math.abs(aEff - journal.lastAutoA) > 0.03 || tNow - (journal.lastAutoT || 0) > 2) {
+      journal.buf.push({ t: r3(tNow), e: 'auto', a: aEff, ch: section === 'chorus' ? 1 : 0 });
+      journal.lastAutoA = aEff;
+      journal.lastAutoT = tNow;
+    }
+  }
 
   setChip('wpmChip', String(Math.round((keyTimes.length / 5) * (60 / 12))));
   setChip('sectionChip', section);
@@ -874,13 +998,13 @@ if (powerBtn) powerBtn.addEventListener('click', async () => {
 });
 
 const styleSel = $('styleSel');
-if (styleSel) styleSel.addEventListener('change', e => { setStyle(e.target.value); });
+if (styleSel) styleSel.addEventListener('change', e => { setStyle(e.target.value); jrnSet('style', e.target.value); });
 const keySel = $('keySel');
-if (keySel) keySel.addEventListener('change', e => { keyOff = +e.target.value; });
+if (keySel) keySel.addEventListener('change', e => { keyOff = +e.target.value; jrnSet('key', keyOff); });
 const mapSel = $('mapSel');
-if (mapSel) mapSel.addEventListener('change', e => { mapping = e.target.value; });
+if (mapSel) mapSel.addEventListener('change', e => { mapping = e.target.value; jrnSet('mapping', mapping); });
 const drumsChk = $('drumsChk');
-if (drumsChk) drumsChk.addEventListener('change', e => { drumsOn = e.target.checked; });
+if (drumsChk) drumsChk.addEventListener('change', e => { drumsOn = e.target.checked; jrnSet('drums', drumsOn); });
 const claudeChk = $('claudeChk');
 if (claudeChk) claudeChk.addEventListener('change', e => {
   claudeOn = e.target.checked;
@@ -893,6 +1017,7 @@ if (volRange) volRange.addEventListener('input', () => {
 const crackleRange = $('crackleRange');
 if (crackleRange) crackleRange.addEventListener('input', () => {
   if (engine) engine.setCrackle(cracLevel());
+  jrnSet('crackle', val('crackleRange', 45));
 });
 
 /* ---------- recording ---------- */
@@ -1081,5 +1206,5 @@ if (telemChk) telemChk.addEventListener('change', e => {
   }
 });
 
-window.KS = { connectStream, enqueueClaude, handleChar, handleTelemetry, debug };
-export { connectStream, enqueueClaude, debug };
+window.KS = { connectStream, enqueueClaude, handleChar, handleTelemetry, enableJournal, debug };
+export { connectStream, enqueueClaude, enableJournal, debug };

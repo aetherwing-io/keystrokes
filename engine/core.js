@@ -571,6 +571,7 @@ export function createAudioEngine(actx, opts) {
     buildBed,
     setVolume(v) { masterGain.gain.setTargetAtTime(v, ctx.currentTime, 0.1); },
     setCrackle(v) { if (crackleGain) crackleGain.gain.setTargetAtTime(v, ctx.currentTime, 0.2); },
+    setCrackleAt(v, at) { if (crackleGain) crackleGain.gain.setTargetAtTime(v, at, 0.2); },
     voices: {
       rhodesNote, playPulse, playSawLead, playKalimba, playMelodyOsc, playClaude,
       playStabTone, playPadChord, bassHit,

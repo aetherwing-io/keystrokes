@@ -5,12 +5,15 @@
  *   browser page  <--SSE--  this server  <--UDP:8124--  tap.py (your keys)
  *                                        <--fs.watch--  ~/.claude/projects/*.jsonl (Claude's characters)
  *
- * Zero dependencies. Binds to 127.0.0.1 only. Nothing is logged or stored;
- * events flow through memory and are gone.
+ * Zero dependencies. Binds to 127.0.0.1 only. Keystrokes and characters flow
+ * through memory and are gone. The one thing persisted is the session journal
+ * (POST /journal → ~/.keystrokes/sessions): resolved SOUND events for the
+ * shelf to replay — never text, never keys.
  */
 import http from 'node:http';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -33,7 +36,8 @@ const STATIC = {
   '/live': ['live.html', 'text/html; charset=utf-8'],
   '/toy': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
-  '/engine.js': ['engine.js', 'text/javascript; charset=utf-8'],
+  '/shelf': ['shelf.html', 'text/html; charset=utf-8'],
+  '/shelf.html': ['shelf.html', 'text/html; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
 };
 const server = http.createServer((req, res) => {
@@ -53,6 +57,45 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, listeners: clients.size }));
     return;
+  }
+  if (u === '/journal' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 1024 * 1024) req.destroy(); });
+    req.on('end', async () => {
+      let out = { ok: false };
+      try { out = await acceptJournal(JSON.parse(body)); } catch { /* bad batch */ }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    });
+    return;
+  }
+  if (u === '/sessions' && req.method === 'GET') {
+    listSessions().then(list => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(list));
+    });
+    return;
+  }
+  {
+    const m = u.match(/^\/sessions\/([\w.-]+)$/);
+    if (m && SID_RE.test(m[1])) {
+      const file = path.join(SESS_DIR, m[1] + '.jsonl');
+      if (req.method === 'GET') {
+        if (!fs.existsSync(file)) { res.writeHead(404); res.end('not found'); return; }
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        fs.createReadStream(file).pipe(res);
+        return;
+      }
+      if (req.method === 'DELETE') {
+        // soft delete: rename out of sight, never destroy
+        try { fs.renameSync(file, file + '.trashed'); } catch { /* already gone */ }
+        try { fs.renameSync(path.join(SESS_DIR, m[1] + '.meta.json'),
+                            path.join(SESS_DIR, m[1] + '.meta.json.trashed')); } catch { /* fine */ }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+        return;
+      }
+    }
   }
   if (u === '/event' && req.method === 'POST') {
     // generic external event intake (e.g. a git post-commit hook):
@@ -111,6 +154,87 @@ udp.on('message', buf => {
   } catch { /* malformed datagram — drop it */ }
 });
 udp.bind(UDP_PORT, '127.0.0.1');
+
+/* ---------- session journal storage ---------- */
+const SESS_DIR = path.join(os.homedir(), '.keystrokes', 'sessions');
+fs.mkdirSync(SESS_DIR, { recursive: true });
+const SID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[a-z0-9]{4}$/;
+const MAX_SESSION_BYTES = 64 * 1024 * 1024;
+const writeChains = new Map();   // sid -> promise chain (appends never interleave)
+const sessMeta = new Map();      // sid -> meta (mirrors the sidecar)
+
+function metaPath(sid) { return path.join(SESS_DIR, sid + '.meta.json'); }
+function sessPath(sid) { return path.join(SESS_DIR, sid + '.jsonl'); }
+
+async function acceptJournal(j) {
+  if (!j || !SID_RE.test(String(j.sid)) || !Array.isArray(j.events)) return { ok: false };
+  const sid = j.sid;
+  const seq = Number(j.seq) || 0;
+  let meta = sessMeta.get(sid);
+  if (!meta) {
+    try { meta = JSON.parse(await fsp.readFile(metaPath(sid), 'utf8')); } catch { meta = null; }
+    meta ??= { events: 0, lastT: 0, lastSeq: 0, peakEpm: 0, bytes: 0,
+               startedWall: j.header?.startedWall || Date.now(),
+               style: j.header?.style || 'lofi', key: j.header?.key || 0,
+               buckets: {} };
+    sessMeta.set(sid, meta);
+  }
+  if (seq <= meta.lastSeq) return { ok: true, dup: true };
+  if (meta.bytes > MAX_SESSION_BYTES) return { ok: false, full: true };
+
+  let lines = '';
+  if (j.header && meta.events === 0) lines += JSON.stringify(j.header) + '\n';
+  for (const ev of j.events.slice(0, 5000)) {
+    lines += JSON.stringify(ev) + '\n';
+    if (typeof ev.t === 'number') {
+      if (ev.t > meta.lastT) meta.lastT = ev.t;
+      const b = Math.floor(ev.t / 60);
+      meta.buckets[b] = (meta.buckets[b] || 0) + 1;
+      if (meta.buckets[b] > meta.peakEpm) meta.peakEpm = meta.buckets[b];
+      // keep only recent buckets so meta stays tiny
+      for (const k of Object.keys(meta.buckets)) if (+k < b - 3) delete meta.buckets[k];
+    }
+  }
+  meta.events += j.events.length;
+  meta.bytes += lines.length;
+  meta.lastSeq = seq;
+
+  const chain = (writeChains.get(sid) || Promise.resolve())
+    .then(() => fsp.appendFile(sessPath(sid), lines))
+    .then(() => fsp.writeFile(metaPath(sid), JSON.stringify({ ...meta, buckets: undefined })))
+    .catch(() => {});
+  writeChains.set(sid, chain);
+  await chain;
+  return { ok: true };
+}
+
+async function listSessions() {
+  let files = [];
+  try { files = await fsp.readdir(SESS_DIR); } catch { return []; }
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.jsonl')) continue;
+    const sid = f.slice(0, -6);
+    if (!SID_RE.test(sid)) continue;
+    let meta = sessMeta.get(sid);
+    if (!meta) {
+      try { meta = JSON.parse(await fsp.readFile(metaPath(sid), 'utf8')); } catch { meta = null; }
+    }
+    let bytes = 0;
+    try { bytes = (await fsp.stat(sessPath(sid))).size; } catch { /* vanished */ }
+    out.push({
+      id: sid,
+      startedWall: meta?.startedWall || 0,
+      style: meta?.style || 'lofi',
+      key: meta?.key || 0,
+      duration: meta?.lastT || 0,
+      events: meta?.events || 0,
+      peakEpm: meta?.peakEpm || 0,
+      bytes,
+    });
+  }
+  return out.sort((a, b) => (a.id < b.id ? 1 : -1));
+}
 
 /* ---------- Claude transcript tailer ---------- */
 const offsets = new Map();   // file path -> bytes already consumed
