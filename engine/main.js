@@ -34,7 +34,7 @@ let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
 let claudeSymbolCount = 0, claudeBoundary = true, claudeWordIdx = 0;
 let lastUserMidi = 0, lastUserNoteAt = 0;
-let combo = 0, comboTier = 0, lastComboAt = 0;   // arcade streaks, for Fox
+let combo = 0, comboTier = 0, lastComboAt = 0;   // arcade typing streaks
 
 /* leitmotifs: recurring words become the session's theme (memory only — the
  * words themselves are never persisted or journaled, only their notes) */
@@ -1080,7 +1080,7 @@ const DEMO_TEXT =
   'function lofi(keys) {\n' +
   '  return keys.map(k => note(k));\n' +
   '}\n\n' +
-  'the quick brown fox jams over a jazzy fourth chord. can you hear it?';
+  'the quick brown keys jam over a jazzy fourth chord. can you hear it?';
 function stopDemo() {
   if (demoTimer) { clearTimeout(demoTimer); demoTimer = null; }
   const b = $('demoBtn'); if (b) b.textContent = 'Auto-type a demo';
