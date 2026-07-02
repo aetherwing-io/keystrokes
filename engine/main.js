@@ -34,6 +34,7 @@ let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
 let claudeSymbolCount = 0, claudeBoundary = true, claudeWordIdx = 0;
 let lastUserMidi = 0, lastUserNoteAt = 0;
+let combo = 0, comboTier = 0, lastComboAt = 0;   // arcade streaks, for Fox
 
 /* leitmotifs: recurring words become the session's theme (memory only — the
  * words themselves are never persisted or journaled, only their notes) */
@@ -201,7 +202,7 @@ function cracLevel() { return (val('crackleRange', 45) / 100) * 0.16; }
 
 /* ---------- mapping ---------- */
 function chordAt(slotIdx) {
-  const bar = Math.floor(slotIdx / 16);
+  const bar = Math.max(0, Math.floor(slotIdx / 16));
   if (STYLE.chorusProg && bar >= chorusStartBar && bar < chorusUntilBar) {
     return STYLE.chorusProg[bar % 4];   // chorus runs one chord a bar, always
   }
@@ -543,7 +544,7 @@ function setStyle(name) {
 /* ---------- quantize & viz feed ---------- */
 function quantized() {
   const now = ctx.currentTime;
-  let n = Math.ceil((now + 0.012 - t0) / P16);
+  let n = Math.max(0, Math.ceil((now + 0.012 - t0) / P16));   // never before the anchor
   let t = t0 + n * P16 + (n % 2 ? swingDelay() : 0);
   if (t < now + 0.005) { n++; t = t0 + n * P16 + (n % 2 ? swingDelay() : 0); }
   return { n, t };
@@ -693,6 +694,27 @@ function handleChar(ch, shift) {
   slotNotes.set(n, count + 1);
   lastUserMidi = midi; lastUserNoteAt = now;
   pushViz(midi, tier, vel, 'note');
+
+  // arcade combo streaks: keep the run alive and the lead sprouts harmonies
+  if (STYLE.lead === 'pulse') {
+    if (now - lastComboAt < 2000) combo++;
+    else { combo = 1; comboTier = 0; }
+    lastComboAt = now;
+    const newTier = combo >= 100 ? 3 : combo >= 50 ? 2 : combo >= 20 ? 1 : 0;
+    if (newTier > comboTier) {
+      comboTier = newTier;
+      sparkBurst(midi);
+      playPulse(96, 0.3, t, 0);
+    }
+    if (comboTier >= 1) playPulse(snapMidi(midi + 4, allowedPcs(chord, 1)), vel * 0.4, t, 0);
+    if (comboTier >= 2) playPulse(snapMidi(midi + 7, allowedPcs(chord, 1)), vel * 0.35, t, 0);
+    setChip('comboChip', combo >= 5 ? combo + '×' : '·');
+  }
+}
+function sparkBurst(midi) {
+  for (let i = 0; i < 14; i++) {
+    pushViz(midi + Math.random() * 24 - 12, Math.floor(Math.random() * 3), 0.6, 'spark');
+  }
 }
 
 /* ---------- Claude voice ---------- */
@@ -1063,16 +1085,14 @@ function stopDemo() {
   if (demoTimer) { clearTimeout(demoTimer); demoTimer = null; }
   const b = $('demoBtn'); if (b) b.textContent = 'Auto-type a demo';
 }
-const demoBtn = $('demoBtn');
-if (demoBtn) demoBtn.addEventListener('click', () => {
-  if (demoTimer) { stopDemo(); return; }
+function startAutotype(text) {
   if (!started) powerBtn.click();
   else if (!running) powerBtn.click();
-  demoBtn.textContent = 'Stop the demo';
+  if ($('demoBtn')) $('demoBtn').textContent = 'Stop the demo';
   let i = 0;
   const step = () => {
-    if (i >= DEMO_TEXT.length) { stopDemo(); return; }
-    const ch = DEMO_TEXT[i++];
+    if (i >= text.length) { stopDemo(); return; }
+    const ch = text[i++];
     if (pad) { pad.value += ch; pad.scrollTop = pad.scrollHeight; }
     if (running) handleChar(ch === '\n' ? '\n' : ch.toLowerCase(), false);
     let d = 70 + Math.random() * 95;
@@ -1083,7 +1103,38 @@ if (demoBtn) demoBtn.addEventListener('click', () => {
     demoTimer = setTimeout(step, d);
   };
   step();
+}
+const demoBtn = $('demoBtn');
+if (demoBtn) demoBtn.addEventListener('click', () => {
+  if (demoTimer) { stopDemo(); return; }
+  startAutotype(pendingAutoText || DEMO_TEXT);
 });
+
+/* ---------- play any text: ?text=… or ?gist=<id> ---------- */
+let pendingAutoText = null;
+(async () => {
+  const p = new URLSearchParams(location.search);
+  if (p.has('text')) {
+    pendingAutoText = p.get('text').slice(0, 4000);
+  } else if (p.has('gist')) {
+    try {
+      const g = await (await fetch('https://api.github.com/gists/' + encodeURIComponent(p.get('gist')))).json();
+      const f = g.files && Object.values(g.files)[0];
+      if (f && typeof f.content === 'string') pendingAutoText = f.content.slice(0, 4000);
+    } catch { /* gist unavailable — the pad still works */ }
+  }
+  if (pendingAutoText && demoBtn) {
+    demoBtn.textContent = 'Play the loaded text';
+    if (pad) pad.placeholder = 'Loaded ' + pendingAutoText.length + ' characters — press "Play the loaded text" to hear them.';
+  }
+})();
+
+/* ---------- circadian key: mornings bright, nights dark ---------- */
+if (keySel) {
+  const h = new Date().getHours();
+  const circ = h < 5 ? 3 : h < 11 ? 0 : h < 17 ? 7 : h < 22 ? 9 : 3;
+  if (circ !== 0) { keySel.value = String(circ); keyOff = circ; }
+}
 
 /* ---------- visualization ---------- */
 const viz = $('viz');
@@ -1136,6 +1187,9 @@ if (viz) {
       if (nn.kind === 'perc') {
         vctx.fillStyle = 'rgba(138,123,108,' + (alpha * 0.7).toFixed(3) + ')';
         vctx.fillRect(x - 2, y - 2, 4, 4);
+      } else if (nn.kind === 'spark') {
+        vctx.fillStyle = TIER_COLORS[nn.tier] + Math.round(alpha * 255).toString(16).padStart(2, '0');
+        vctx.fillRect(x - 1.5 + (Math.random() * 3 - 1.5), y - 1.5 + (Math.random() * 3 - 1.5), 3, 3);
       } else if (nn.kind === 'telem') {
         vctx.save();
         vctx.translate(x, y); vctx.rotate(Math.PI / 4);

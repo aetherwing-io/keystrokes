@@ -87,6 +87,36 @@ curl -s -XPOST localhost:8123/event -d '{"kind":"commit"}' >/dev/null 2>&1 || tr
 
 The "Telemetry" checkbox on the live page mutes all of it.
 
+## The shelf — every session is a tape
+
+Sessions journal themselves automatically as **sound events** (never text,
+never keys): the local deck tapes to `~/.keystrokes/sessions/`, the website
+tapes to your browser's IndexedDB. The shelf (`/shelf` locally,
+`shelf.html` on the site) lists them as cassettes — auto-titled, cover art
+drawn from the session's own notes — and re-renders any of them through the
+same engine in an `OfflineAudioContext`, playable in place or exported as WAV.
+Renders are re-performances from the score: notes exact, tape jitter fresh.
+Single renders cap at 45 minutes; longer sessions render a chosen range.
+
+## More seasoning
+
+- **Sessions have form**: sustained flow earns a 16-bar chorus (octave-doubled
+  lead, open hats, brighter filter) after a one-bar build; going idle composes
+  a real outro — cadence, then the vinyl runout groove — and the next
+  keystroke spins the tape back up.
+- **Leitmotifs**: any word you type 4+ times becomes a quiet counter-melody
+  echoed at chord changes, adapted to the current harmony. Your project's
+  vocabulary writes its own theme.
+- **The duet is real**: Claude notes landing within 350ms of yours harmonize
+  a third above; typing `?` gets a three-note answer; when you idle to read,
+  Claude's voice takes the lead.
+- **Arcade combos** (for Fox): keep a typing streak alive in Arcade style and
+  the chip lead sprouts harmonies at 20, 50, and 100 — with pixel fireworks.
+- **Circadian key**: pages open in a key that matches the hour — bright C
+  mornings, G middays, A evenings, E♭ late nights (until you touch Key).
+- **Play any text**: `?text=…` or `?gist=<id>` on the site loads any text as
+  a performable track — every document has a song.
+
 Engine behavior worth knowing:
 
 - **Your voice** drives everything: drums and brightness follow *your*
