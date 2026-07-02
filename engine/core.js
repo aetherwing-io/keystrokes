@@ -18,6 +18,12 @@ export const STYLES = {
   lofi: {
     title: 'Lofi tape', bpm: 76, bpc: 1, leadOct: 0,
     lead: 'rhodes', harmony: 'stab', bass: 'lofi', drums: 'boombap', bed: 'vinyl',
+    chorusProg: [ // the royal road, one chord a bar — the earned lift
+      { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
+      { label: '13',   root: 7, tones: [7, 11, 5, 4] },
+      { label: 'm7',   root: 4, tones: [4, 7, 11, 2] },
+      { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
+    ],
     progs: [
       [ // IV - iii - ii - vi
         { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
@@ -42,6 +48,12 @@ export const STYLES = {
   arcade: {
     title: 'Arcade (8-bit)', bpm: 112, bpc: 1, leadOct: 12,
     lead: 'pulse', harmony: 'arp', bass: 'chip', drums: 'chip', bed: 'hiss',
+    chorusProg: [ // I - IV - V - I, the victory lap
+      { label: '', root: 0, tones: [0, 4, 7] },
+      { label: '', root: 5, tones: [5, 9, 0] },
+      { label: '', root: 7, tones: [7, 11, 2] },
+      { label: '', root: 0, tones: [0, 4, 7] },
+    ],
     progs: [
       [ // I - V - vi - IV, sunny
         { label: '',  root: 0, tones: [0, 4, 7] },
@@ -60,6 +72,12 @@ export const STYLES = {
   drive: {
     title: 'Night drive', bpm: 92, bpc: 1, leadOct: 0,
     lead: 'saw', harmony: 'pad', bass: 'octave', drums: 'retro', bed: 'hiss',
+    chorusProg: [ // VI - VII - i - i, foot down
+      { label: 'maj7', root: 5, tones: [5, 9, 0, 4] },
+      { label: '7',    root: 7, tones: [7, 11, 2, 5] },
+      { label: 'm7',   root: 9, tones: [9, 0, 4, 7] },
+      { label: 'm7',   root: 9, tones: [9, 0, 4, 7] },
+    ],
     progs: [
       [ // i - VI - III - VII, neon
         { label: 'm7',   root: 9, tones: [9, 0, 4, 7] },
@@ -72,6 +90,12 @@ export const STYLES = {
   rain: {
     title: 'Rainy day', bpm: 62, bpc: 2, leadOct: 0,
     lead: 'kalimba', harmony: 'padlong', bass: 'drone', drums: 'sparse', bed: 'rain',
+    chorusProg: [ // the sun through the clouds, briefly
+      { label: 'maj9', root: 0, tones: [0, 4, 7, 11, 2] },
+      { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
+      { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
+      { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },
+    ],
     progs: [
       [ // slow sway
         { label: 'maj9', root: 5, tones: [5, 9, 0, 4, 7] },

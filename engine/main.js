@@ -43,6 +43,13 @@ let rhodesNote, playPulse, playSawLead, playKalimba, playMelodyOsc, playClaude,
     kickBoom, snareDust, hatTick, chipKick, chipSnare, retroKick, gatedSnare,
     shaker, playRim, playScratch;
 
+/* arrangement state — the session has a shape, not just a loop */
+const FT = new URLSearchParams(location.search).has('fasttest') ? 0.1 : 1;
+let section = 'intro';               // intro|verse|build|chorus|break|outro|runout
+let flowSince = 0;
+let buildAtBar = -1, chorusStartBar = -1, chorusUntilBar = -1, cooldownUntilBar = -1;
+let outroAtBar = -1;
+
 const sampler = makeSampler();
 const rawPack = fetchSamplePack();   // network fetch starts at page load
 
@@ -55,7 +62,11 @@ function cracLevel() { return (val('crackleRange', 45) / 100) * 0.16; }
 
 /* ---------- mapping ---------- */
 function chordAt(slotIdx) {
-  const chordBar = Math.floor(slotIdx / 16 / STYLE.bpc);
+  const bar = Math.floor(slotIdx / 16);
+  if (STYLE.chorusProg && bar >= chorusStartBar && bar < chorusUntilBar) {
+    return STYLE.chorusProg[bar % 4];   // chorus runs one chord a bar, always
+  }
+  const chordBar = Math.floor(bar / STYLE.bpc);
   const prog = STYLE.progs[Math.floor(chordBar / 8) % STYLE.progs.length];
   return prog[chordBar % 4];
 }
@@ -129,13 +140,19 @@ function initAudio() {
 }
 
 /* ---------- melody dispatch ---------- */
-function playMelody(midi, vel, when, tier) {
-  midi += STYLE.leadOct;
+function leadVoice(midi, vel, when, tier) {
   switch (STYLE.lead) {
     case 'pulse':   return playPulse(midi, vel, when, tier);
     case 'saw':     return playSawLead(midi, vel, when, tier);
     case 'kalimba': return playKalimba(midi, vel, when);
     default:        return rhodesNote(midi, vel, when, { tier, dur: 0.95 + tier * 0.25, cutoff: 1900, gainMul: 0.62 });
+  }
+}
+function playMelody(midi, vel, when, tier) {
+  midi += STYLE.leadOct;
+  leadVoice(midi, vel, when, tier);
+  if (section === 'chorus' && vel > 0.3) {
+    leadVoice(midi + 12, vel * 0.6, when + 0.02, tier);   // the chorus doubles up an octave
   }
 }
 
@@ -159,33 +176,62 @@ function scheduleBass(chord, pos, bar, t, act) {
 }
 function scheduleDrums(pos, bar, t, act) {
   const d = density();
+  const inChorus = section === 'chorus';
   switch (STYLE.drums) {
     case 'chip':
       if (pos === 0 || pos === 8) chipKick(t, 0.85);
       if (pos === 4 || pos === 12) chipSnare(t, 0.8);
       if (pos % 2 === 0) hatTick(t, 0.4);
-      else if (act > 1.05 - d * 0.6) hatTick(t, 0.2);
+      else if (inChorus || act > 1.05 - d * 0.6) hatTick(t, 0.2);
       break;
     case 'retro':
       if (pos % 4 === 0) retroKick(t, 0.85);
       if (pos === 4 || pos === 12) gatedSnare(t, 0.8);
       if (pos % 4 === 2) hatTick(t, 0.4);
+      if (inChorus && pos % 4 === 0) hatTick(t, 0.25);
       break;
     case 'sparse':
       if (pos === 0 && bar % 2 === 0) kickBoom(t, 0.5);
       if (pos === 8) shaker(t, 0.5 + act * 0.3);
+      if (inChorus && pos === 4) shaker(t, 0.35);
       break;
     default: // boombap
       { const kicks = bar % 2 ? [0, 6, 10] : [0, 10];
         if (kicks.includes(pos)) kickBoom(t, 0.85);
         if (pos === 4 || pos === 12) snareDust(t, 0.8);
         if (pos % 2 === 0) hatTick(t, pos % 4 === 0 ? 0.4 : 0.55);
-        else if (act > 1.05 - d * 0.6) hatTick(t, 0.22); }
+        else if (inChorus || act > 1.05 - d * 0.6) hatTick(t, 0.22); }
   }
+  if (inChorus && pos === 0) hatTick(t, 0.3, true);
 }
 
 /* ---------- transport / scheduler ---------- */
 function swingDelay() { return (val('swingRange', 15) / 100) * P16; }
+
+function riserFx(when, dur) {
+  const src = ctx.createBufferSource(); src.buffer = engine.noiseBuf; src.loop = true;
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass';
+  hp.frequency.setValueAtTime(400, when);
+  hp.frequency.exponentialRampToValueAtTime(6000, when + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.linearRampToValueAtTime(0.045, when + dur - 0.05);
+  g.gain.linearRampToValueAtTime(0.0001, when + dur);
+  src.connect(hp); hp.connect(g); g.connect(engine.masterFilter);
+  src.start(when); src.stop(when + dur + 0.1);
+}
+function tapeStartFx() {
+  const now = ctx.currentTime + 0.02;
+  const o = ctx.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(180, now);
+  o.frequency.exponentialRampToValueAtTime(520, now + 0.5);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.linearRampToValueAtTime(0.05, now + 0.1);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+  o.connect(g); g.connect(engine.masterFilter);
+  o.start(now); o.stop(now + 0.6);
+}
 
 function scheduleSlot(s) {
   const pos = s % 16;
@@ -195,6 +241,22 @@ function scheduleSlot(s) {
   const t = base + (s % 2 ? swingDelay() : 0);
   const act = smoothedAct;
   const chordStart = pos === 0 && bar % STYLE.bpc === 0;
+
+  if (section === 'runout') {
+    // the end-groove: bed keeps spinning, a soft home chord surfaces now and then
+    if (pos === 0 && bar % 4 === 0) playStabTone(48 + keyOff, 0.08, t);
+    if (pos === 0) setTimeout(() => setChip('chordChip', '—'), Math.max(0, (t - ctx.currentTime) * 1000));
+    return;
+  }
+  if (section === 'outro') {
+    if (bar === outroAtBar && pos === 0) {
+      // the composed ending: V under the tonic, then home rings out
+      bassHit(36 + ((keyOff + 7) % 12), 0.45, t);
+      bassHit(36 + keyOff, 0.5, t + 8 * P16);
+      [0, 4, 7, 11, 14].forEach((iv, i) => playStabTone(48 + keyOff + iv, 0.22, t + 8 * P16 + i * 0.03));
+    }
+    return;   // melody rests, drums are done for the night
+  }
 
   if (pos === 0) {
     switch (STYLE.harmony) {
@@ -223,11 +285,50 @@ function scheduleSlot(s) {
     playPulse(tone, 0.13 + act * 0.1, t, 0);
   }
 
+  if (section === 'build' && bar === buildAtBar) {
+    if (pos === 0) riserFx(t, 16 * P16);
+    if (pos >= 8 && pos % 2 === 0) snareDust(t, 0.25 + (pos - 8) * 0.05);
+  }
+
   scheduleBass(chord, pos, bar, t, act);
-  if (drumsOn) scheduleDrums(pos, bar, t, act);
+  if (drumsOn && section !== 'break') scheduleDrums(pos, bar, t, act);
+}
+
+/* ---------- section state machine ---------- */
+function updateSection(now) {
+  if (section === 'runout') return;               // only typing wakes the tape back up
+  if (lastKeyAt === 0) { section = 'intro'; return; }
+  const bar = Math.floor(slot / 16);
+  const idle = now - lastKeyAt;
+
+  if (section === 'outro') {
+    if (bar > outroAtBar) section = 'runout';
+    return;
+  }
+  if (idle > 120000 * FT) {
+    section = 'outro';
+    outroAtBar = bar + 1;
+    return;
+  }
+  if (bar === buildAtBar) { section = 'build'; return; }
+  if (bar >= chorusStartBar && bar < chorusUntilBar) { section = 'chorus'; return; }
+  if (idle > 25000 * FT) { section = 'break'; flowSince = 0; return; }
+  section = 'verse';
+
+  // chorus arming: sustained flow earns the lift
+  if (smoothedAct > 0.6) { if (!flowSince) flowSince = now; }
+  else flowSince = 0;
+  if (flowSince && now - flowSince > 120000 * FT && bar >= cooldownUntilBar) {
+    buildAtBar = bar + 1;
+    chorusStartBar = bar + 2;
+    chorusUntilBar = chorusStartBar + 16;
+    cooldownUntilBar = chorusUntilBar + 16;
+    flowSince = 0;
+  }
 }
 
 function tick() {
+  updateSection(performance.now());
   const ahead = ctx.currentTime + 0.15;
   while (t0 + slot * P16 < ahead) { scheduleSlot(slot); slot++; }
 
@@ -238,9 +339,11 @@ function tick() {
   smoothedAct += (act - smoothedAct) * 0.08;
 
   engine.drumBus.gain.setTargetAtTime(drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 : 0, ctx.currentTime, 0.8);
-  engine.masterFilter.frequency.setTargetAtTime(950 + smoothedAct * 1700, ctx.currentTime, 1.2);
+  engine.masterFilter.frequency.setTargetAtTime(
+    950 + smoothedAct * 1700 + (section === 'chorus' ? 400 : 0), ctx.currentTime, 1.2);
 
   setChip('wpmChip', String(Math.round((keyTimes.length / 5) * (60 / 12))));
+  setChip('sectionChip', section);
   const bars = Math.round(smoothedAct * 5);
   setChip('flowChip', '▮'.repeat(bars) + '·'.repeat(5 - bars));
   const cc = $('claudeChip');
@@ -299,6 +402,13 @@ function handleChar(ch, shift) {
   lastKeyAt = now;
   keyTimes.push(now);
   const d = density();
+
+  if (section === 'runout' || section === 'outro') {
+    // resurrection: the tape spins back up
+    section = 'verse';
+    outroAtBar = -1;
+    tapeStartFx();
+  }
 
   if (ch === '\b') {
     playScratch(ctx.currentTime + 0.005);
@@ -859,6 +969,7 @@ function debug() {
     act: Math.round(smoothedAct * 100) / 100,
     vizCount: vizNotes.length,
     telem: telemCount, tension: erroredFiles.size, pendingBash,
+    section, buildAtBar, chorusStartBar, chorusUntilBar, outroAtBar,
   };
 }
 
