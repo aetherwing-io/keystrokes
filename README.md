@@ -112,8 +112,8 @@ Single renders cap at 45 minutes; longer sessions render a chosen range.
   Claude's voice takes the lead.
 - **Arcade combos**: keep a typing streak alive in Arcade style and
   the chip lead sprouts harmonies at 20, 50, and 100 — with pixel fireworks.
-- **Circadian key**: pages open in a key that matches the hour — bright C
-  mornings, G middays, A evenings, E♭ late nights (until you touch Key).
+- **Settings persist**: sliders and toggles are remembered per browser, so
+  the mix you tune is the mix you come back to.
 - **Play any text**: `?text=…` or `?gist=<id>` on the site loads any text as
   a performable track — every document has a song.
 

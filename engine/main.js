@@ -346,23 +346,32 @@ function scheduleDrums(pos, bar, t, act) {
       if (pos % 2 === 0) hatTick(t, 0.4);
       else if (inChorus || act > 1.05 - d * 0.6) hatTick(t, 0.2);
       break;
-    case 'retro':
+    case 'retro': {
+      const rh = (bar * 2654435761) >>> 0;
       if (pos % 4 === 0) retroKick(t, 0.85);
+      if (pos === 14 && ((rh >>> 4) & 3) === 1) retroKick(t, 0.5);   // pickup kick
       if (pos === 4 || pos === 12) gatedSnare(t, 0.8);
       if (pos % 4 === 2) hatTick(t, 0.4);
       if (inChorus && pos % 4 === 0) hatTick(t, 0.25);
-      break;
+      break; }
     case 'sparse':
       if (pos === 0 && bar % 2 === 0) kickBoom(t, 0.5);
       if (pos === 8) shaker(t, 0.5 + act * 0.3);
       if (inChorus && pos === 4) shaker(t, 0.35);
       break;
     default: // boombap
-      { const kicks = bar % 2 ? [0, 6, 10] : [0, 10];
+      { // per-bar variation, deterministic from the bar index — the drummer
+        // plays the song, not a loop
+        const h = (bar * 2654435761) >>> 0;
+        const kickPool = [[0, 10], [0, 6, 10], [0, 10, 14], [0, 7, 10]];
+        const kicks = kickPool[(h >>> 3) & 3];
         if (kicks.includes(pos)) kickBoom(t, 0.85);
         if (pos === 4 || pos === 12) snareDust(t, 0.8);
-        if (pos % 2 === 0) hatTick(t, pos % 4 === 0 ? 0.4 : 0.55);
-        else if (inChorus || act > 1.05 - d * 0.6) hatTick(t, 0.22); }
+        if (pos === 14 && ((h >>> 5) & 7) === 0) snareDust(t, 0.16);   // ghost
+        if (pos === 7 && ((h >>> 8) & 7) === 1) snareDust(t, 0.14);    // ghost
+        const hatRest = ((h >>> 11) & 15) === 2 && pos < 8;            // a breath bar
+        if (!hatRest && pos % 2 === 0) hatTick(t, pos % 4 === 0 ? 0.4 : 0.55);
+        else if (!hatRest && (inChorus || act > 1.05 - d * 0.6)) hatTick(t, 0.22); }
   }
   if (inChorus && pos === 0) hatTick(t, 0.3, true);
 }
@@ -1229,14 +1238,7 @@ for (const id of SAVE_IDS) {
   const el = $(id);
   if (el) el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', saveSettings);
 }
-const restoredKey = restoreSettings();
-
-/* ---------- circadian key: mornings bright, nights dark (until you choose) ---------- */
-if (keySel && !restoredKey) {
-  const h = new Date().getHours();
-  const circ = h < 5 ? 3 : h < 11 ? 0 : h < 17 ? 7 : h < 22 ? 9 : 3;
-  if (circ !== 0) { keySel.value = String(circ); keyOff = circ; }
-}
+restoreSettings();   // default key is C; your saved choice wins
 
 /* ---------- visualization ---------- */
 const viz = $('viz');
