@@ -100,9 +100,9 @@ const report = {
       ? Math.round(melodic.length / activeMins.length) : 0,
     peakMinute: Math.max(0, ...activeMins),
     velocity: velStats(sorted.filter(e => MELODY.has(e.e))),
-    claudeVelocity: velStats(sorted.filter(e => e.e === 'claude')),
+    claudeVelocity: velStats(sorted.filter(e => e.e === 'claude' || e.c === 1)),
     claudeShare: melodic.length
-      ? Math.round(100 * sorted.filter(e => e.e === 'claude').length / melodic.length) + '%' : '0%',
+      ? Math.round(100 * sorted.filter(e => e.e === 'claude' || e.c === 1).length / melodic.length) + '%' : '0%',
   },
   harmony: {
     key: PCN[key],

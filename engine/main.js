@@ -30,6 +30,7 @@ let keyOff = 0, drumsOn = true, claudeOn = true, mapping = 'geo';
 let masterGain = null;
 let msDest = null, recorder = null, recChunks = [];
 let keyTimes = [], lastKeyAt = 0, lastWasBoundary = true, wordCharIdx = 0;
+let lastCharNL = false;              // consecutive newlines = a paragraph break
 let bsTimes = [];                    // recent backspaces: edit bursts drive the kit
 let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
@@ -81,6 +82,31 @@ let flowSince = 0;
 let buildAtBar = -1, chorusStartBar = -1, chorusUntilBar = -1, cooldownUntilBar = -1;
 let outroAtBar = -1;
 
+/* the weave: the two melodic voices braid registers over time. Each voice
+ * folds its notes toward a center; the centers mirror each other and cross
+ * as the phase turns, so who sits on top — with the presence and brightness
+ * that come with it — trades back and forth. The phase turns at phrase
+ * boundaries (and every 8 bars regardless); the centers glide in tick().
+ * The chorus pins you on top: that lift stays yours. */
+let weavePhase = 0.9, lastWeaveBar = -2;
+const weave = { you: 71.3, cl: 55.7, lead: 0.79 };   // matches phase 0.9
+function weaveTargets() {
+  if (section === 'chorus') return { you: 68, cl: 61, lead: 1 };   // you on top, claude tucked warm underneath
+  const s = Math.sin(2 * Math.PI * weavePhase);
+  return { you: 66 - 9 * s, cl: 61 + 9 * s, lead: 0.5 - 0.5 * s };
+}
+function advanceWeave(amt, force) {
+  const bar = Math.floor(slot / 16);
+  if (!force && bar - lastWeaveBar < 2) return;   // at most one turn per 2 bars
+  lastWeaveBar = bar;
+  weavePhase += amt;
+}
+function foldToward(m, center, span = 8) {
+  while (m < center - span) m += 12;
+  while (m > center + span) m -= 12;
+  return m;
+}
+
 const sampler = makeSampler();
 const rawPack = fetchSamplePack();   // network fetch starts at page load
 
@@ -91,6 +117,7 @@ const rawPack = fetchSamplePack();   // network fetch starts at page load
  */
 let journalPref = null;              // 'hub' | 'idb' | null — set by the page
 let journal = null;
+let claudeVoicing = false;           // true while claude borrows a lead instrument
 let sessionEpoch = 0;
 const r2 = v => Math.round(v * 100) / 100;
 const r3 = v => Math.round(v * 1000) / 1000;
@@ -131,7 +158,12 @@ function initJournal() {
 
 function wrapVoicesForJournal() {
   const T = w => r3(w - sessionEpoch);
-  const wrap = (fn, map) => (...a) => { jrn(map(...a)); return fn(...a); };
+  const wrap = (fn, map) => (...a) => {
+    const ev = map(...a);
+    if (claudeVoicing) ev.c = 1;   // claude on a lead instrument is still claude
+    jrn(ev);
+    return fn(...a);
+  };
   const drumMap = e => (w, v) => ({ t: T(w), e, v: r2(v) });
   rhodesNote   = wrap(rhodesNote,   (m, v, w, o = {}) => ({ t: T(w), e: 'rhodes', m, v: r2(v),
     o: { dur: o.dur, cutoff: o.cutoff, gainMul: o.gainMul, panBias: o.panBias, tier: o.tier } }));
@@ -289,22 +321,23 @@ function initAudio() {
 }
 
 /* ---------- melody dispatch ---------- */
-function leadVoice(midi, vel, when, tier) {
+function leadVoice(midi, vel, when, tier, ld = weave.lead) {
   switch (STYLE.lead) {
     case 'pulse':   return playPulse(midi, vel, when, tier);
     case 'saw':     return playSawLead(midi, vel, when, tier);
     case 'kalimba': return playKalimba(midi, vel, when);
     default:        return rhodesNote(midi, vel, when, {
-      tier, dur: 0.95 + tier * 0.25,
-      cutoff: 1250 + 1000 * leadLevel(),   // pulls the melody back into the haze
+      tier, dur: 0.95 + tier * 0.25 + 0.5 * (1 - ld),
+      cutoff: 900 + (350 + 1000 * leadLevel()) * ld,   // leading sits in the light, receding sinks into the haze
       gainMul: 0.55,
     });
   }
 }
 const leadLevel = () => val('leadRange', 45) / 100;
-function playMelody(midi, vel, when, tier) {
+function playMelody(midi, vel, when, tier, prefolded) {
+  if (!prefolded) midi = foldToward(midi, weave.you);   // your notes ride your side of the weave
   midi += STYLE.leadOct;
-  vel *= 0.5 + 0.7 * leadLevel();   // the Lead control: how far forward the melody sits
+  vel *= (0.5 + 0.7 * leadLevel()) * (0.78 + 0.22 * weave.lead);   // Lead control × weave presence
   leadVoice(midi, vel, when, tier);
   if (section === 'chorus' && vel > 0.3) {
     leadVoice(midi + 12, vel * 0.6, when + 0.02, tier);   // the chorus doubles up an octave
@@ -430,6 +463,7 @@ function scheduleSlot(s) {
   }
 
   if (pos === 0) {
+    if (bar - lastWeaveBar >= 8) advanceWeave(1 / 6);   // the braid turns even without punctuation
     switch (STYLE.harmony) {
       case 'pad':
         if (chordStart) playPadChord(voicingOf(chord), t, STYLE.bpc * 16 * P16 + 0.3, false);
@@ -477,7 +511,7 @@ function updateSection(now) {
   if (section === 'runout') return;               // only typing wakes the tape back up
   if (lastKeyAt === 0) { section = 'intro'; return; }
   const bar = Math.floor(slot / 16);
-  const idle = now - lastKeyAt;
+  const idle = now - Math.max(lastKeyAt, lastMouseAt);   // mousing counts as being here
 
   if (section === 'outro') {
     if (bar > outroAtBar) section = 'runout';
@@ -507,13 +541,18 @@ function updateSection(now) {
 
 function tick() {
   updateSection(performance.now());
+  const wt = weaveTargets();
+  weave.you += (wt.you - weave.you) * 0.015;
+  weave.cl += (wt.cl - weave.cl) * 0.015;
+  weave.lead += (wt.lead - weave.lead) * 0.015;
   const ahead = ctx.currentTime + 0.15;
   while (t0 + slot * P16 < ahead) { scheduleSlot(slot); slot++; }
 
   const now = performance.now();
   keyTimes = keyTimes.filter(t => now - t < 12000);
   const recent = keyTimes.filter(t => now - t < 6000).length;
-  const act = clamp(recent / 26, 0, 1);
+  mouseTimes = mouseTimes.filter(x => now - x < 6000);
+  const act = clamp((recent + Math.min(mouseTimes.length, 8) * 0.6) / 26, 0, 1);
   smoothedAct += (act - smoothedAct) * 0.08;
 
   bsTimes = bsTimes.filter(x => now - x < 3000);
@@ -558,6 +597,8 @@ function tick() {
 function anchorTransport(lead = 0.15) {
   t0 = ctx.currentTime + lead;
   slot = 0;
+  lastWeaveBar = -2;   // bar counter restarts — don't leave the guards stranded ahead of it
+  lastMotifBar = -4;
 }
 function tapeStopFx() {
   const now = ctx.currentTime + 0.02;
@@ -617,7 +658,9 @@ function echoMotif(chord, t) {
   for (const ch of w) {
     let m = geoMidi(ch, false);
     if (m == null) continue;
-    m = snapMidi(clamp(m, 57, 81), pcs);
+    m = snapMidi(m, pcs);
+    m = foldToward(m, (weave.you + weave.cl) / 2);   // the motif threads the middle of the loom
+    if (m < 55) m += 12;                             // keep the kalimba out of the mud
     playKalimba(m, 0.17, t + i * P16);
     pushViz(m, 1, 0.3, 'motif', gid);
     i++;
@@ -631,6 +674,8 @@ function handleChar(ch, shift) {
   lastKeyAt = now;
   keyTimes.push(now);
   const d = density();
+  const wasNL = lastCharNL;
+  lastCharNL = ch === '\n';
 
   if (section === 'runout' || section === 'outro') {
     // resurrection: the tape spins back up
@@ -662,6 +707,7 @@ function handleChar(ch, shift) {
   }
   if (ch === '\n') {
     flushWord();
+    if (wasNL) advanceWeave(1 / 3, true);   // a paragraph is deliberate — it always turns the braid
     const { n, t } = quantized();
     hatTick(t, 0.45, true, true);
     bassHit(bassOf(chordAt(n)) + 12, 0.4, t);
@@ -682,17 +728,19 @@ function handleChar(ch, shift) {
 
   if (ch in CADENCE) {
     flushWord();
+    if (ch !== ',') advanceWeave(1 / 6);   // sentence ends turn the braid
     const rootPc = (chord.root + keyOff) % 12;
-    let m = 60 + rootPc; if (m < 58) m += 12;
-    m += CADENCE[ch];
-    playMelody(m, ch === '!' ? 0.6 : 0.4, t + count * 0.033, 0);
+    // fold the cadence root, then speak the interval — '.', ',', '?', '!' stay distinct
+    let m = foldToward(60 + rootPc, weave.you - 7) + CADENCE[ch];
+    if (m < 50) m += 12; else if (m > 88) m -= 12;
+    playMelody(m, ch === '!' ? 0.6 : 0.4, t + count * 0.033, 0, true);
     slotNotes.set(n, count + 1);
     lastWasBoundary = true;
     lastUserMidi = m; lastUserNoteAt = now;
     pushViz(m, 0, 0.5, 'note');
     if (ch === '?' && claudeOn && claudeQueue.length === 0) {
       // a question deserves an answer: 9th, down through the (chord's own) 7th, home
-      const base = 72 + rootPc;
+      const base = foldToward(72 + rootPc, weave.cl);   // answered from claude's side of the weave
       const pcs = allowedPcs(chord, 2);
       playClaude(snapMidi(base + 14, pcs), 0.4, t + SPB);
       playClaude(snapMidi(base + 10, pcs), 0.35, t + SPB * 1.5);
@@ -712,8 +760,9 @@ function handleChar(ch, shift) {
     pushViz(92, 2, 0.25, 'perc');
     if ('{}[]()<>'.includes(ch)) {
       const rootPc = (chord.root + keyOff) % 12;
-      playMelody(72 + rootPc + 2, 0.2, t, 2);
-      pushViz(74 + rootPc, 2, 0.25, 'note');
+      const bm = foldToward(74 + rootPc, weave.you);
+      playMelody(bm, 0.2, t, 2);
+      pushViz(bm, 2, 0.25, 'note');
     }
     lastWasBoundary = false;
     return;
@@ -745,6 +794,7 @@ function handleChar(ch, shift) {
     midi = clamp(midi, 50, 88);
     midi = snapMidi(midi, allowedPcs(chord, tier));
   }
+  midi = foldToward(midi, weave.you);   // the weave decides the octave; the key decides the note
 
   let vel = 0.36;
   if (wordInitial) vel += 0.13;
@@ -802,8 +852,9 @@ function claudeStep(item) {
   }
   if (ch in CADENCE) {
     const rootPc = (chord.root + keyOff) % 12;
-    playClaude(72 + rootPc + CADENCE[ch], 0.4, t);
-    pushViz(72 + rootPc + CADENCE[ch], 1, 0.35, 'claude');
+    const cm = foldToward(72 + rootPc + CADENCE[ch], weave.cl);
+    playClaude(cm, 0.4, t);
+    pushViz(cm, 1, 0.35, 'claude');
     claudeBoundary = true;
     return;
   }
@@ -830,22 +881,33 @@ function claudeStep(item) {
   const idleLead = lastKeyAt > 0 && nowMs - lastKeyAt > 15000;
   let midi;
   if (lastUserMidi && nowMs - lastUserNoteAt < 350) {
-    // playing together: harmonize a third (or a fifth) above the user's note
-    midi = snapMidi(lastUserMidi + 4, allowedPcs(chord, 1));
-    if (midi <= lastUserMidi + 2) midi = snapMidi(lastUserMidi + 7, allowedPcs(chord, 1));
-    midi = clamp(midi, 64, 98);
+    // playing together: harmonize a third toward claude's own side of the weave
+    const below = weave.cl < weave.you;
+    midi = snapMidi(lastUserMidi + (below ? -3 : 4), allowedPcs(chord, 1));
+    if (below) {
+      if (midi >= lastUserMidi - 2) midi = snapMidi(lastUserMidi - 7, allowedPcs(chord, 1));
+      if (midi >= lastUserMidi - 2) midi -= 12;   // never a second under a ringing note
+    } else if (midi <= lastUserMidi + 2) {
+      midi = snapMidi(lastUserMidi + 7, allowedPcs(chord, 1));
+    }
+    midi = clamp(midi, 40, 98);
   } else {
     midi = geoMidi(ch, false);
     if (midi == null) return;
-    midi = clamp(midi + 12, idleLead ? 60 : 64, idleLead ? 98 : 96);
     midi = snapMidi(midi, allowedPcs(chord, tier));
+    midi = clamp(foldToward(midi, weave.cl), 40, 98);
   }
 
-  let vel = 0.22 + (idleLead ? 0.1 : 0);   // quieter than the human, always
+  let vel = 0.22 + (idleLead ? 0.1 : 0);
   if (wordInitial) vel += 0.08;
   vel *= 0.55 + 0.6 * leadLevel();         // the Lead control calms both voices
+  vel *= 0.7 + 0.6 * (1 - weave.lead);     // presence trades across the weave
 
-  playClaude(midi, vel, t);
+  if (weave.lead < 0.35) {                 // on top, claude earns the lead instrument
+    claudeVoicing = true;
+    leadVoice(midi, vel, t, tier, 1 - weave.lead);
+    claudeVoicing = false;
+  } else playClaude(midi, vel, t);
   claudeLastNoteAt = performance.now();
   pushViz(midi, tier, vel, 'claude');
 }
@@ -1064,6 +1126,54 @@ if (pad) {
     }
   });
 }
+
+/* ---------- the mouse is company too ----------
+ * Pointer glides land as soft kalimba ghosts — window height picks the
+ * register, a quick flick leans in a little. Clicks keep time on the rim.
+ * Mouse presence feeds a capped share of the activity meter and defers the
+ * break/outro timers, so the groove idles along while you read and scroll.
+ */
+let mouseTimes = [];
+let lastMouseAt = 0, lastMouseNoteAt = 0;
+let mousePrevX = -1, mousePrevY = -1, mouseDist = 0, mouseSegT0 = 0;
+function mouseNote(yFrac, fast) {
+  const { n, t } = quantized();
+  if ((slotNotes.get(n) || 0) >= 2) return;     // typing owns the slot; glides yield
+  const chord = chordAt(n);
+  let m = Math.round(79 - yFrac * 26);          // higher on the window sings higher
+  m = snapMidi(clamp(m, 50, 84), allowedPcs(chord, 1));
+  playKalimba(m, fast ? 0.2 : 0.13, t);
+  pushViz(m, 1, fast ? 0.35 : 0.22, 'note');
+}
+document.addEventListener('pointermove', e => {
+  if (!running) return;
+  if (e.pointerType && e.pointerType !== 'mouse') return;   // touch-scroll shouldn't plink
+  if (e.buttons) return;                        // drags (sliders, selection) aren't glides
+  const now = performance.now();
+  if (now - lastMouseAt > 1500) { mouseDist = 0; mousePrevX = -1; mousePrevY = -1; }   // a rest ends the gesture
+  lastMouseAt = now;
+  if (mousePrevX >= 0) mouseDist += Math.hypot(e.clientX - mousePrevX, e.clientY - mousePrevY);
+  else mouseSegT0 = now;
+  mousePrevX = e.clientX; mousePrevY = e.clientY;
+  if (mouseDist > 150 && now - lastMouseNoteAt > 340) {
+    const fast = now - mouseSegT0 < 240;
+    mouseDist = 0; mouseSegT0 = now;
+    lastMouseNoteAt = now;
+    if (section === 'outro' || section === 'runout') return;   // the tape wound down — glides stay quiet
+    mouseTimes.push(now);
+    mouseNote(clamp(e.clientY / (window.innerHeight || 1), 0, 1), fast);
+  }
+});
+document.addEventListener('pointerdown', e => {
+  if (!running) return;
+  if (e.pointerType && e.pointerType !== 'mouse') return;
+  lastMouseAt = performance.now();              // a click is presence, even on a control
+  if (section === 'outro' || section === 'runout') return;
+  if (e.target && e.target.closest && e.target.closest('button, select, input, textarea, label, a, option')) return;
+  const { t } = quantized();
+  playRim(t, 0.3);                              // a click keeps time
+  pushViz(58, 2, 0.3, 'perc');
+});
 
 /* ---------- controls ---------- */
 const powerBtn = $('powerBtn');
@@ -1350,6 +1460,9 @@ function debug() {
     telem: telemCount, tension: erroredFiles.size, pendingBash,
     section, buildAtBar, chorusStartBar, chorusUntilBar, outroAtBar,
     motifs: motifs.length, words: wordCounts.size,
+    weave: { phase: r2(weavePhase), you: Math.round(weave.you), claude: Math.round(weave.cl), lead: r2(weave.lead) },
+    recent: vizNotes.slice(-6).map(nn => ({ k: nn.kind, m: Math.round(nn.midi) })),
+    mouseNotes: mouseTimes.length,
   };
 }
 

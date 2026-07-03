@@ -74,9 +74,9 @@ for (const ev of events) {
   const on = toTicks(ev.t);
   const durS = ev.e === 'pad' ? (ev.d || 4) : (DUR_S[ev.e] || 0.3);
   const off = on + Math.max(24, toTicks(durS) - toTicks(0));
-  if (MELODY.has(ev.e) && typeof ev.m === 'number') {
+  if (MELODY.has(ev.e) && !ev.c && typeof ev.m === 'number') {
     tracks.melody.push({ on, off: on + toTicks(durS), note: ev.m, v: ev.v });
-  } else if (ev.e === 'claude' && typeof ev.m === 'number') {
+  } else if ((ev.e === 'claude' || (ev.c && MELODY.has(ev.e))) && typeof ev.m === 'number') {
     tracks.claude.push({ on, off: on + toTicks(durS), note: ev.m, v: ev.v });
   } else if (ev.e === 'bass' && typeof ev.m === 'number') {
     tracks.bass.push({ on, off: on + toTicks((ev.o && ev.o.dur) || 0.5), note: ev.m, v: ev.v });

@@ -131,7 +131,7 @@ function drawCover(canvas, events, duration) {
     }
     if (typeof ev.m !== 'number') continue;
     const y = H - 24 - ((clamp(ev.m, 36, 96) - 36) / 60) * (H - 44);
-    if (ev.e === 'claude') {
+    if (ev.e === 'claude' || ev.c) {
       c.strokeStyle = 'rgba(143,189,173,0.5)';
       c.strokeRect(x - 1.5, y - 1.5, 3, 3);
     } else {
