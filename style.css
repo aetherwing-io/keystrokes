@@ -341,7 +341,78 @@ body.fullpage footer {
 }
 footer .promoline { color: #c3b8dc; }
 
-@media (max-width: 760px), (max-height: 540px) {
+@media (max-width: 760px) {
+  body.fullpage {
+    height: 100dvh; min-height: 100dvh; overflow: hidden;
+    padding:
+      max(8px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+  }
+  body.fullpage .deck {
+    flex: 1; min-height: 0;
+    padding: 12px; gap: 8px; border-radius: 12px;
+    max-width: 100%; overflow: hidden;
+  }
+  body.fullpage header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: 9px;
+  }
+  body.fullpage .tapebadge { display: none; }
+  body.fullpage h1 {
+    font-size: clamp(17px, 6.2vw, 23px);
+    letter-spacing: .08em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  body.fullpage .tagline { display: none; }
+  body.fullpage .transport { margin-left: 0; gap: 7px; }
+  body.fullpage .btn.rec { display: none; }
+  body.fullpage .btn.power {
+    min-width: 74px; max-width: 102px; min-height: 40px; padding: 8px 10px;
+    font-size: 11px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  body.fullpage .chips {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px 8px;
+    padding: 7px 9px;
+    font-size: 11px;
+    border-radius: 7px;
+  }
+  body.fullpage .chips span { display: none; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  body.fullpage .chips .chord,
+  body.fullpage .chips span:has(#wpmChip),
+  body.fullpage .chips span:has(#soundChip) {
+    display: inline;
+  }
+  body.fullpage textarea {
+    flex: 1 1 45%;
+    min-height: 170px;
+    resize: none;
+    padding: 13px 14px;
+    font-size: 16px;
+    line-height: 1.55;
+    border-radius: 10px;
+  }
+  body.fullpage canvas#viz {
+    flex: 0 1 32%;
+    height: auto;
+    min-height: 120px;
+    max-height: 230px;
+    border-radius: 10px;
+  }
+  body.fullpage .controls,
+  body.fullpage footer {
+    display: none;
+  }
+}
+
+@media (max-height: 540px) and (min-width: 761px) {
   body.fullpage { height: auto; min-height: 100dvh; overflow: auto; }
   body.fullpage .deck { flex: none; }
   body.fullpage textarea { flex: none; min-height: 150px; }
