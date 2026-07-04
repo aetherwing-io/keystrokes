@@ -20,6 +20,16 @@ kept for the claude.ai artifact; the shared engine now lives in `engine/`.)
 
 ## Quick start (session soundtrack)
 
+One command — clones the repo and starts everything:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aetherwing-io/keystrokes/main/install.sh | sh
+```
+
+Rather read it first? [`install.sh`](install.sh) checks for `git`/`node`/`python3`,
+clones into `~/keystrokes` (override with `KEYSTROKES_HOME`), and runs
+`./start.sh`. Already have the repo cloned? That last step is all you need:
+
 ```sh
 ./start.sh
 ```
@@ -33,12 +43,14 @@ permission (System Settings → Privacy & Security → Accessibility) the first
 time — the tap can't see keys without it, and notes will simply not play for
 typing outside the page until you grant it.
 
-**Platform**: `start.sh` is macOS-shaped — it uses `open` to launch the
-browser — but nothing else is. The hub (`server.mjs`, Node `fs.watch`) and the
-browser engine are OS-agnostic, and the tap (`pynput`) runs on Linux (X11) and
-Windows too. Elsewhere, start the pieces by hand: `node server.mjs`, open
-`http://localhost:8123`, then `python tap.py`. Windows needs no Accessibility
-prompt; the secure-input password silencing (see Privacy) is macOS-only.
+**Platform**: nothing here is macOS-only except the OS-native bits macOS
+provides. The hub (`server.mjs`, Node `fs.watch`) and the browser engine are
+OS-agnostic, the tap (`pynput`) runs on Linux (X11) and Windows too, and
+`start.sh` opens the browser with `open`, falling back to `xdg-open` (or just
+printing the URL). Windows has no `start.sh` — run the pieces by hand: `node
+server.mjs`, open `http://localhost:8123`, then `python tap.py` (no
+Accessibility prompt there). The secure-input password silencing (see Privacy)
+is macOS-only.
 
 ## Architecture
 

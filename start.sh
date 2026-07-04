@@ -19,7 +19,10 @@ SERVER_PID=$!
 trap 'kill "$SERVER_PID" 2>/dev/null' EXIT INT TERM
 
 sleep 0.6
-open "http://localhost:${KEYSTROKES_PORT:-8123}"
+URL="http://localhost:${KEYSTROKES_PORT:-8123}"
+if command -v open >/dev/null 2>&1; then open "$URL"
+elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1 &
+else echo "open $URL in your browser"; fi
 
 echo
 echo "engine page opened — click 'Start the tape' there, then come back to work."
