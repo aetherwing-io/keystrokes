@@ -83,6 +83,8 @@ let section = 'intro';               // intro|verse|build|chorus|break|outro|run
 let flowSince = 0;
 let buildAtBar = -1, chorusStartBar = -1, chorusUntilBar = -1, cooldownUntilBar = -1;
 let outroAtBar = -1;
+const needsExplicitAudioTap = () =>
+  typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 
 /* the weave: the two melodic voices braid registers over time. Each voice
  * folds its notes toward a center; the centers mirror each other and cross
@@ -401,6 +403,7 @@ function initAudio() {
     if (!ok) sampler.ok = false;
     updateSoundChip();
   });
+  ctx.addEventListener?.('statechange', updateSoundChip);
   if (journalPref) initJournal();
 }
 
@@ -413,7 +416,7 @@ function updateSoundChip() {
   setChip('soundChip', sampler.ok ? 'sampled' : 'synth');
 }
 
-function primeAudioGraph() {
+function primeAudioGraph(audible = false) {
   if (!ctx) return;
   try {
     const src = ctx.createBufferSource();
@@ -424,11 +427,27 @@ function primeAudioGraph() {
     g.connect(ctx.destination);
     src.start(0);
   } catch { /* best-effort mobile audio unlock */ }
+  if (!audible) return;
+  try {
+    const now = ctx.currentTime;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, now);
+    o.frequency.exponentialRampToValueAtTime(660, now + 0.06);
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.018, now + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    o.connect(g);
+    g.connect(ctx.destination);
+    o.start(now);
+    o.stop(now + 0.1);
+  } catch { /* unlock ping is optional */ }
 }
 
-function requestAudioStart() {
+function requestAudioStart({ audible = false } = {}) {
   if (!ctx) return Promise.resolve(false);
-  primeAudioGraph();
+  primeAudioGraph(audible);
   const resumed = ctx.state === 'running' || !ctx.resume
     ? Promise.resolve()
     : ctx.resume();
@@ -1326,6 +1345,11 @@ function ensurePadRunning(musical) {
   }
   const b = $('powerBtn');
   if (!started && b) {
+    if (needsExplicitAudioTap()) {
+      b.textContent = 'Tap start';
+      nudgePowerButton(b);
+      return false;
+    }
     b.click();
     return running;
   }
@@ -1465,10 +1489,11 @@ document.addEventListener('pointerdown', e => {
 
 /* ---------- controls ---------- */
 const powerBtn = $('powerBtn');
+if (powerBtn && needsExplicitAudioTap()) powerBtn.textContent = 'Start';
 if (powerBtn) powerBtn.addEventListener('click', async () => {
   if (!started) {
     initAudio();
-    const audioReady = requestAudioStart();
+    const audioReady = requestAudioStart({ audible: needsExplicitAudioTap() });
     startTransport();
     started = true;
     drainClaude();
@@ -1478,7 +1503,7 @@ if (powerBtn) powerBtn.addEventListener('click', async () => {
     return;
   }
   if (running && ctx && ctx.state !== 'running') {
-    const audioReady = requestAudioStart();
+    const audioReady = requestAudioStart({ audible: needsExplicitAudioTap() });
     if (pad) pad.focus();
     audioReady.then(ok => { powerBtn.textContent = ok ? 'Pause' : 'Start sound'; });
     return;
@@ -1492,7 +1517,7 @@ if (powerBtn) powerBtn.addEventListener('click', async () => {
     stopDemo();
     powerBtn.textContent = 'Resume';
   } else {
-    const audioReady = requestAudioStart();
+    const audioReady = requestAudioStart({ audible: needsExplicitAudioTap() });
     anchorTransport();               // resume clean at bar 1 (style/tempo may have changed)
     tickTimer = setInterval(tick, 25);
     running = true;
