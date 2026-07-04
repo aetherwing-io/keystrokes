@@ -398,9 +398,49 @@ function initAudio() {
   engine.setVolume(volLevel());
   engine.buildBed();
   decodeSamplerInto(ctx, sampler, rawPack).then(ok => {
-    setChip('soundChip', ok ? 'sampled' : 'synth');
+    if (!ok) sampler.ok = false;
+    updateSoundChip();
   });
   if (journalPref) initJournal();
+}
+
+function updateSoundChip() {
+  if (!ctx) return;
+  if (ctx.state !== 'running') {
+    setChip('soundChip', 'tap start');
+    return;
+  }
+  setChip('soundChip', sampler.ok ? 'sampled' : 'synth');
+}
+
+function primeAudioGraph() {
+  if (!ctx) return;
+  try {
+    const src = ctx.createBufferSource();
+    src.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+    const g = ctx.createGain();
+    g.gain.value = 0.0001;
+    src.connect(g);
+    g.connect(ctx.destination);
+    src.start(0);
+  } catch { /* best-effort mobile audio unlock */ }
+}
+
+function requestAudioStart() {
+  if (!ctx) return Promise.resolve(false);
+  primeAudioGraph();
+  const resumed = ctx.state === 'running' || !ctx.resume
+    ? Promise.resolve()
+    : ctx.resume();
+  return resumed
+    .then(() => {
+      updateSoundChip();
+      return ctx.state === 'running';
+    })
+    .catch(() => {
+      updateSoundChip();
+      return false;
+    });
 }
 
 /* ---------- melody dispatch ---------- */
@@ -1280,7 +1320,10 @@ function nudgePowerButton(b) {
 
 function ensurePadRunning(musical) {
   if (tapLive || !musical) return false;
-  if (running) return true;
+  if (running) {
+    if (ctx && ctx.state !== 'running') requestAudioStart();
+    return true;
+  }
   const b = $('powerBtn');
   if (!started && b) {
     b.click();
@@ -1425,11 +1468,19 @@ const powerBtn = $('powerBtn');
 if (powerBtn) powerBtn.addEventListener('click', async () => {
   if (!started) {
     initAudio();
+    const audioReady = requestAudioStart();
     startTransport();
     started = true;
     drainClaude();
     powerBtn.textContent = 'Pause';
     if (pad) pad.focus();
+    audioReady.then(ok => { if (!ok && running) powerBtn.textContent = 'Start sound'; });
+    return;
+  }
+  if (running && ctx && ctx.state !== 'running') {
+    const audioReady = requestAudioStart();
+    if (pad) pad.focus();
+    audioReady.then(ok => { powerBtn.textContent = ok ? 'Pause' : 'Start sound'; });
     return;
   }
   if (running) {
@@ -1441,13 +1492,14 @@ if (powerBtn) powerBtn.addEventListener('click', async () => {
     stopDemo();
     powerBtn.textContent = 'Resume';
   } else {
-    await ctx.resume();
+    const audioReady = requestAudioStart();
     anchorTransport();               // resume clean at bar 1 (style/tempo may have changed)
     tickTimer = setInterval(tick, 25);
     running = true;
     document.body.classList.add('rolling');
     powerBtn.textContent = 'Pause';
     if (pad) pad.focus();
+    audioReady.then(ok => { if (!ok && running) powerBtn.textContent = 'Start sound'; });
   }
 });
 
