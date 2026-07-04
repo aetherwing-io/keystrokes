@@ -1268,34 +1268,90 @@ function connectStream() {
 
 /* ---------- local pad ---------- */
 const pad = $('pad');
+let padLastValue = pad ? pad.value : '';
+let lastPadKeyHandledAt = 0;
+
+function nudgePowerButton(b) {
+  if (!b) return;
+  b.classList.remove('nudge');
+  void b.offsetWidth;
+  b.classList.add('nudge');
+}
+
+function ensurePadRunning(musical) {
+  if (tapLive || !musical) return false;
+  if (running) return true;
+  const b = $('powerBtn');
+  if (!started && b) {
+    b.click();
+    return running;
+  }
+  nudgePowerButton(b);             // an explicit Pause stays paused
+  return false;
+}
+
+function textDelta(prev, next) {
+  let start = 0;
+  const lim = Math.min(prev.length, next.length);
+  while (start < lim && prev[start] === next[start]) start++;
+  let prevEnd = prev.length, nextEnd = next.length;
+  while (prevEnd > start && nextEnd > start && prev[prevEnd - 1] === next[nextEnd - 1]) {
+    prevEnd--;
+    nextEnd--;
+  }
+  return { inserted: next.slice(start, nextEnd), removed: prev.slice(start, prevEnd) };
+}
+
+function charsFromInput(e, prev, next) {
+  const type = e.inputType || '';
+  if (type === 'insertFromPaste') return '';
+  if (type.startsWith('delete')) return textDelta(prev, next).removed ? '\b' : '';
+  if (type === 'insertLineBreak' || type === 'insertParagraph') return '\n';
+  if (type.startsWith('insert')) {
+    if (typeof e.data === 'string' && e.data) return e.data;
+    return textDelta(prev, next).inserted;
+  }
+  return textDelta(prev, next).inserted;
+}
+
 if (pad) {
   pad.addEventListener('keydown', e => {
     if (demoTimer && !e.metaKey && !e.ctrlKey) stopDemo();
     if (tapLive) return;
     if (!running) {
       const musical = e.key.length === 1 || e.key === 'Backspace' || e.key === 'Enter';
-      const b = $('powerBtn');
-      if (!started && musical && b && !e.metaKey && !e.ctrlKey) {
-        b.click();               // typing IS the play button — a keydown is a valid audio gesture
-      } else {
-        if (musical && b) { b.classList.remove('nudge'); void b.offsetWidth; b.classList.add('nudge'); }
-        return;                  // an explicit Pause stays paused
-      }
+      if (!e.metaKey && !e.ctrlKey && ensurePadRunning(musical)) {
+        // typing IS the play button — a keydown is a valid audio gesture
+      } else return;
     }
     if (e.repeat) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-    if (e.key === 'Backspace') handleChar('\b', false);
-    else if (e.key === 'Enter') handleChar('\n', false);
+    if (e.key === 'Backspace') { handleChar('\b', false); lastPadKeyHandledAt = performance.now(); }
+    else if (e.key === 'Enter') { handleChar('\n', false); lastPadKeyHandledAt = performance.now(); }
     else if (e.key === 'Tab') {
       e.preventDefault();
       const s = pad.selectionStart;
       pad.setRangeText('  ', s, pad.selectionEnd, 'end');
+      padLastValue = pad.value;
       handleChar('\t', false);
+      lastPadKeyHandledAt = performance.now();
     }
-    else if (e.key.length === 1) handleChar(e.key.toLowerCase(), e.shiftKey);
+    else if (e.key.length === 1) {
+      handleChar(e.key.toLowerCase(), e.shiftKey);
+      lastPadKeyHandledAt = performance.now();
+    }
+  });
+  pad.addEventListener('beforeinput', e => {
+    if (tapLive) return;
+    const musical = e.inputType && !['historyUndo', 'historyRedo'].includes(e.inputType);
+    if (!running) ensurePadRunning(musical);
   });
   pad.addEventListener('input', e => {
+    const prev = padLastValue;
+    const next = pad.value;
+    padLastValue = next;
+    if (demoTimer && e.isTrusted) stopDemo();
     if (running && !tapLive && e.inputType === 'insertFromPaste') {
       const { n, t } = quantized();
       const chord = chordAt(n);
@@ -1303,6 +1359,15 @@ if (pad) {
         playStabTone(m + 12, 0.3, t + i * 0.05);
         pushViz(m + 12, 0, 0.4, 'note');
       });
+      return;
+    }
+    if (tapLive || performance.now() - lastPadKeyHandledAt < 140) return;
+    const chars = charsFromInput(e, prev, next);
+    if (!chars || !ensurePadRunning(true)) return;
+    for (const ch of Array.from(chars).slice(0, 32)) {
+      const lower = ch.toLowerCase();
+      const shifted = ch !== lower && ch === ch.toUpperCase();
+      handleChar(ch === '\r' ? '\n' : lower, shifted);
     }
   });
 }
@@ -1488,7 +1553,7 @@ function startAutotype(text) {
   const step = () => {
     if (i >= text.length) { stopDemo(); return; }
     const ch = text[i++];
-    if (pad) { pad.value += ch; pad.scrollTop = pad.scrollHeight; }
+    if (pad) { pad.value += ch; pad.scrollTop = pad.scrollHeight; padLastValue = pad.value; }
     if (running) handleChar(ch === '\n' ? '\n' : ch.toLowerCase(), false);
     let d = 70 + Math.random() * 95;
     if (ch === ' ') d = 150 + Math.random() * 90;
