@@ -7,12 +7,15 @@
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎧</text></svg>">
 </head>
-<body>
+<body class="fullpage style-lofi">
 
 <div class="deck session">
   <header>
-    <h1>KEYSTROKES<span class="cursor">_</span></h1>
-    <span class="tagline">side B · the music of the work</span>
+    <span class="tapebadge" aria-hidden="true"><i class="reel"></i><i class="reel"></i></span>
+    <div class="brand">
+      <h1>KEYSTROKES<span class="cursor">_</span></h1>
+      <span class="tagline">side B · the music of the work</span>
+    </div>
     <div class="transport">
       <button class="btn rec" id="recBtn" title="Record the output to a downloadable audio file"><span class="dot"></span>Rec</button>
       <button class="btn power" id="powerBtn">Start the tape</button>
@@ -26,7 +29,7 @@
     <span>section <b id="sectionChip">intro</b></span>
     <span>sound <b id="soundChip">loading…</b></span>
     <span class="src">keys <b id="tapChip">waiting</b></span>
-    <span class="src">claude <b id="claudeChip">quiet</b></span>
+    <span class="src">assistant <b id="claudeChip">quiet</b></span>
     <span class="src">tape <b id="journalChip">off</b></span>
   </div>
 
@@ -36,28 +39,29 @@
   <canvas id="viz"></canvas>
 
   <div class="controls">
-    <div class="ctl">
+    <div class="ctl" data-hint="swaps the whole vibe — instrument, tempo, drums, and the background bed — while your keys keep steering">
       <label for="styleSel">Style</label>
       <select id="styleSel">
         <option value="lofi" selected>Lofi tape</option>
+        <option value="hiphop">Hip-hop</option>
         <option value="arcade">Arcade (8-bit)</option>
         <option value="drive">Night drive</option>
         <option value="rain">Rainy day</option>
       </select>
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="master volume for everything">
       <label for="volRange">Volume</label>
       <input type="range" id="volRange" min="0" max="100" value="75">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="how busy the melody is — low thins common mid-word letters to ghost notes and rests, high plays nearly every key">
       <label for="densRange">Density</label>
       <input type="range" id="densRange" min="0" max="100" value="50">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="how far forward the melody sits — level and brightness of the lead voice over the backing">
       <label for="leadRange">Lead</label>
       <input type="range" id="leadRange" min="0" max="100" value="45">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="the key everything is tuned to — every note snaps into it, so nothing you type can be out of tune">
       <label for="keySel">Key</label>
       <select id="keySel">
         <option value="0" selected>C</option>
@@ -67,35 +71,36 @@
         <option value="9">A</option>
       </select>
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="the shuffle in the beat — left is straight and even, right delays every offbeat 16th into a lope">
       <label for="swingRange">Swing</label>
       <input type="range" id="swingRange" min="0" max="34" value="15">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="level of the background bed — vinyl crackle, tape hiss, or rain, depending on style">
       <label for="crackleRange">Texture</label>
       <input type="range" id="crackleRange" min="0" max="100" value="45">
     </div>
-    <div class="ctl check">
+    <div class="ctl check" data-hint="the kit — uncheck for just keys, chords, and texture">
       <input type="checkbox" id="drumsChk" checked>
       <label for="drumsChk">Drums</label>
     </div>
-    <div class="ctl check">
+    <div class="ctl check" data-hint="the characters your Claude Code and Codex sessions generate play a second music-box voice — panned right, drawn as outlined dots">
       <input type="checkbox" id="claudeChk" checked>
-      <label for="claudeChk">Claude voice</label>
+      <label for="claudeChk">Assistant voice</label>
     </div>
-    <div class="ctl check">
+    <div class="ctl check" data-hint="the sound of the work — bash rumbles while it runs, an error holds a tense chord until a success resolves it, tests ring or scratch, a commit earns a drum fill">
       <input type="checkbox" id="telemChk" checked>
       <label for="telemChk">Telemetry</label>
     </div>
-    <button class="btn demo" id="demoBtn">Auto-type a demo</button>
+    <div class="hintline" id="hintLine">point at any control and this line will tell you what it does</div>
+    <button class="btn demo" id="demoBtn" data-hint="types a short text into the pad by itself, so you can hear the instrument play">Auto-type a demo</button>
   </div>
 </div>
 
 <footer>
   <div class="legend">
     <span class="you">your keys (solid)</span>
-    <span class="claude">claude's characters (outlined)</span>
-    <span><a href="/shelf" style="color: var(--amber)">the shelf →</a></span>
+    <span class="claude">assistant characters (outlined)</span>
+    <span><a href="/shelf">the shelf →</a></span>
   </div>
   <span class="privacy">Keys become notes and are discarded — your text is never stored. Sound events are taped locally to ~/.keystrokes for the shelf.</span>
 </footer>

@@ -45,6 +45,30 @@ export const STYLES = {
       ],
     ],
   },
+  hiphop: {
+    title: 'Hip-hop', bpm: 90, bpc: 2, leadOct: 0,
+    lead: 'rhodes', harmony: 'stab', bass: 'sub', drums: 'headnod', bed: 'vinyl',
+    chorusProg: [ // the lift leans on the harmonic-minor V before dropping home
+      { label: 'm9',   root: 2, tones: [2, 5, 9, 0, 4] },
+      { label: 'maj7', root: 5, tones: [5, 9, 0, 4] },
+      { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
+      { label: '7',    root: 4, tones: [4, 8, 11, 2] },
+    ],
+    progs: [
+      [ // i - i - iv - i, the loop: two bars a chord, head down
+        { label: 'm9', root: 9, tones: [9, 0, 4, 7, 11] },
+        { label: 'm9', root: 9, tones: [9, 0, 4, 7, 11] },
+        { label: 'm9', root: 2, tones: [2, 5, 9, 0, 4] },
+        { label: 'm9', root: 9, tones: [9, 0, 4, 7, 11] },
+      ],
+      [ // i - VI - iv - VII, the b-side
+        { label: 'm9',   root: 9, tones: [9, 0, 4, 7, 11] },
+        { label: 'maj7', root: 5, tones: [5, 9, 0, 4] },
+        { label: 'm9',   root: 2, tones: [2, 5, 9, 0, 4] },
+        { label: '13',   root: 7, tones: [7, 11, 5, 4] },
+      ],
+    ],
+  },
   arcade: {
     title: 'Arcade (8-bit)', bpm: 112, bpc: 1, leadOct: 12,
     lead: 'pulse', harmony: 'arp', bass: 'chip', drums: 'chip', bed: 'hiss',
@@ -511,7 +535,8 @@ export function createAudioEngine(actx, opts) {
     // direct = hand-triggered (space/enter): bypasses the activity-gated drum
     // bus so it is audible even when the kit is laying out
     const dest = direct ? masterFilter : drumBus;
-    if (opts.getStyle().drums === 'boombap' && sampler.ok) {
+    const kit = opts.getStyle().drums;
+    if ((kit === 'boombap' || kit === 'headnod') && sampler.ok) {
       return drumSample(open ? 'hatopen' : 'hat', dest, when, vel * (direct ? 0.28 : 0.34));
     }
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass';

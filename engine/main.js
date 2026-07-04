@@ -36,7 +36,9 @@ let smoothedAct = 0;
 let tapLive = false, lastClaudeAt = 0;
 let claudeSymbolCount = 0, claudeBoundary = true, claudeWordIdx = 0, claudeLastNoteAt = 0;
 let lastUserMidi = 0, lastUserNoteAt = 0;
+let lastUserWasTension = false, lastClaudeMidi = 0, phraseNoteCount = 0;
 let combo = 0, comboTier = 0, lastComboAt = 0;   // arcade typing streaks
+let prevVoicing = null;
 
 /* leitmotifs: recurring words become the session's theme (memory only — the
  * words themselves are never persisted or journaled, only their notes) */
@@ -265,6 +267,74 @@ function snapMidi(m, pcs) {
   }
   return m;
 }
+function pcOf(m) { return (((m % 12) + 12) % 12); }
+function chordPcSet(chord) { return new Set(chord.tones.map(pc => (pc + keyOff) % 12)); }
+function isChordTone(chord, midi) { return chordPcSet(chord).has(pcOf(midi)); }
+function seeded01(a, b = 0, c = 0, d = 0) {
+  let h = 2166136261;
+  for (const x of [a, b, c, d]) {
+    h ^= Math.floor(x) + 0x9e3779b9;
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+}
+function beatStrength(n) {
+  const pos = n % 16;
+  if (pos === 0) return 3;
+  if (pos === 8) return 2;
+  if (pos % 4 === 0) return 1;
+  return 0;
+}
+function strumOffset(n, count) {
+  if (!count) return 0;
+  return count * (0.026 + seeded01(n, count, 17) * 0.014);
+}
+function humanDelay(n, role, emphasis = 0) {
+  if (STYLE.lead === 'pulse') return seeded01(n, 31) * 0.006;
+  const salt = role === 'claude' ? 43 : role === 'motif' ? 59 : 29;
+  const base = role === 'claude' ? 0.018 : 0.01;
+  const spread = role === 'claude' ? 0.017 : 0.012;
+  return Math.max(0, base + (seeded01(n, salt, STYLE.bpm) - 0.5) * spread - emphasis * 0.004);
+}
+function melodyWhen(t, n, count, role = 'you', emphasis = 0) {
+  return t + strumOffset(n, count) + humanDelay(n + count * 23, role, emphasis);
+}
+function melodicPcs(chord, tier, n, wordInitial, accented, resolving) {
+  const chordPcs = chordPcSet(chord);
+  const s = new Set(chordPcs);
+  const strong = beatStrength(n) > 0;
+  if (wordInitial || accented || resolving || strong || tier <= 0) return s;
+  if (tier >= 1) PENT.forEach(pc => s.add((pc + keyOff) % 12));
+  // Color notes read as color only when they are off the strong beats.
+  if (tier >= 2 && n % 2 === 1) allowedPcs(chord, 2).forEach(pc => s.add(pc));
+  return s;
+}
+function snapMelodicMidi(target, chord, tier, o = {}) {
+  const pcs = melodicPcs(chord, tier, o.n || 0, !!o.wordInitial, !!o.accented, !!o.resolving);
+  const chordPcs = chordPcSet(chord);
+  const center = o.center ?? target;
+  const prev = o.prev || 0;
+  let best = null, bestScore = Infinity;
+  for (let cand = Math.round(target) - 18; cand <= Math.round(target) + 18; cand++) {
+    const pc = pcOf(cand);
+    if (!pcs.has(pc)) continue;
+    const chordTone = chordPcs.has(pc);
+    let score = Math.abs(cand - target) * 1.15 + Math.abs(cand - center) * 0.08;
+    if (chordTone) score -= (o.wordInitial || o.accented || o.resolving) ? 2.4 : 0.75;
+    else score += beatStrength(o.n || 0) ? 3.0 : 0.55;
+    if (prev) {
+      const dist = Math.abs(cand - prev);
+      const iv = dist % 12;
+      if (iv === 1 || iv === 6 || iv === 11) score += beatStrength(o.n || 0) ? 5.0 : 2.0;
+      if (dist > 7) score += (dist - 7) * (o.accented ? 0.18 : 0.75);
+      if (dist >= 2 && dist <= 5) score -= 1.0;
+      if (dist === 0 && !o.wordInitial) score += 0.5;
+    }
+    if (o.resolving && !chordTone) score += 4.0;
+    if (score < bestScore) { bestScore = score; best = cand; }
+  }
+  return best ?? snapMidi(target, pcs);
+}
 function tierFor(ch) {
   if (ch >= '0' && ch <= '9') return 1;
   const rank = FREQ.indexOf(ch);
@@ -291,14 +361,27 @@ function alphaMidi(ch) {
   return m;
 }
 function voicingOf(chord) {
-  let last = 48;
-  let v = chord.tones.map(pc => {
-    let m = 36 + pc + keyOff;
-    while (m <= last) m += 12;
-    last = m; return m;
-  });
-  if (v[0] >= 53) v = v.map(m => m - 12);
-  return v;
+  const out = [];
+  for (let i = 0; i < chord.tones.length; i++) {
+    const pc = (chord.tones[i] + keyOff) % 12;
+    const min = i === 0 ? 40 : out[i - 1] + 2;
+    const max = i === 0 ? 57 : 92;
+    const target = prevVoicing && prevVoicing[i] ? prevVoicing[i] : 48 + i * 5;
+    let best = null, bestDist = Infinity;
+    for (let m = 36 + pc; m <= 96; m += 12) {
+      if (m < min || m > max) continue;
+      const dist = Math.abs(m - target);
+      if (dist < bestDist) { bestDist = dist; best = m; }
+    }
+    if (best == null) {
+      best = 36 + pc;
+      while (best < min) best += 12;
+      while (best > max) best -= 12;
+    }
+    out.push(best);
+  }
+  prevVoicing = out;
+  return out;
 }
 
 /* ---------- init ---------- */
@@ -357,6 +440,23 @@ function scheduleBass(chord, pos, bar, t, act) {
     case 'drone':
       if (pos === 0 && bar % STYLE.bpc === 0) bassHit(root, 0.3, t, { dur: STYLE.bpc * 16 * P16, cutoff: 300 });
       break;
+    case 'sub': { // the 808: an 8-bar low-end phrase, not the same answer every bar
+      const next = bassOf(chordAt((bar + 1) * 16));
+      const approach = next === root ? root : (next > root ? next - 1 : next + 1);
+      const phrases = [
+        [{ p: 0, m: 0, v: 0.62, d: 1.55 }, { p: 10, m: 0, v: 0.34, d: 0.75 }],
+        [{ p: 0, m: 0, v: 0.56, d: 1.15 }, { p: 6, m: 0, v: 0.26, d: 0.35 }, { p: 11, m: 7, v: 0.33, d: 0.55 }],
+        [{ p: 0, m: 0, v: 0.64, d: 1.85 }, { p: 14, a: 1, v: 0.24, d: 0.28 }],
+        [{ p: 0, m: 0, v: 0.52, d: 0.85 }, { p: 7, m: 0, v: 0.27, d: 0.36 }, { p: 10, m: 5, v: 0.42, d: 0.85 }],
+        [{ p: 0, m: 0, v: 0.60, d: 1.25 }, { p: 12, m: 0, v: 0.32, d: 0.5 }],
+        [{ p: 0, m: 0, v: 0.48, d: 0.7 }, { p: 4, m: 0, v: 0.22, d: 0.25 }, { p: 9, m: 7, v: 0.36, d: 0.75 }, { p: 15, a: 1, v: 0.2, d: 0.22 }],
+        [{ p: 0, m: 0, v: 0.58, d: 1.65 }],
+        [{ p: 0, m: 0, v: 0.56, d: 0.9 }, { p: 5, m: 0, v: 0.25, d: 0.25 }, { p: 8, m: 7, v: 0.34, d: 0.45 }, { p: 13, a: 1, v: 0.24, d: 0.24 }],
+      ];
+      for (const e of phrases[bar % phrases.length]) {
+        if (pos === e.p) bassHit(e.a ? approach : root + e.m, e.v + act * 0.05, t, { cutoff: 240, dur: e.d });
+      }
+      break; }
     default: // lofi
       if (pos === 0) bassHit(root, 0.5, t);
       if (pos === 10) bassHit(bar % 2 ? root + 7 : root, 0.38, t);
@@ -392,6 +492,28 @@ function scheduleDrums(pos, bar, t, act) {
       if (pos === 8) shaker(t, 0.5 + act * 0.3);
       if (inChorus && pos === 4) shaker(t, 0.35);
       break;
+    case 'headnod': { // harder than boombap: syncopated kicks, big backbeat,
+      // phrase-level low-end variation, straight-8 hats with an open pickup
+      const h = (bar * 2654435761) >>> 0;
+      const kickPhrases = [
+        [0, 10],
+        [0, 3, 10],
+        [0, 11],
+        [0, 6, 10, 14],
+        [0, 8],
+        [0, 9, 15],
+        [0],
+        [0, 7, 10, 13],
+      ];
+      const kicks = kickPhrases[bar % kickPhrases.length];
+      if (kicks.includes(pos)) kickBoom(t, pos === 0 ? 0.9 : 0.52 + (((h >>> (pos + 1)) & 3) * 0.08));
+      if (pos === 4 || pos === 12) snareDust(t, 0.95);
+      if (pos === 11 && ((h >>> 6) & 3) === 1) snareDust(t, 0.18);   // ghost into the backbeat
+      if (pos === 15 && ((h >>> 9) & 7) === 2) snareDust(t, 0.15);   // flam into the one
+      if (pos % 2 === 0) hatTick(t, pos % 4 === 0 ? 0.5 : 0.35);
+      else if (inChorus || act > 1.0 - d * 0.5) hatTick(t, 0.2);
+      if (pos === 14 && (inChorus || act > 0.9)) hatTick(t, 0.3, true); // open-hat pickup
+      break; }
     default: // boombap
       { // per-bar variation, deterministic from the bar index — the drummer
         // plays the song, not a loop
@@ -517,18 +639,18 @@ function updateSection(now) {
     if (bar > outroAtBar) section = 'runout';
     return;
   }
-  if (idle > 120000 * FT) {
+  if (idle > 180000 * FT) {
     section = 'outro';
     outroAtBar = bar + 1;
     return;
   }
   if (bar === buildAtBar) { section = 'build'; return; }
   if (bar >= chorusStartBar && bar < chorusUntilBar) { section = 'chorus'; return; }
-  if (idle > 25000 * FT) { section = 'break'; flowSince = 0; return; }
+  if (idle > 55000 * FT) { section = 'break'; flowSince = 0; return; }
   section = 'verse';
 
   // chorus arming: sustained flow earns the lift
-  if (smoothedAct > 0.6) { if (!flowSince) flowSince = now; }
+  if (smoothedAct > 0.6 && idle < 8000 * FT) { if (!flowSince) flowSince = now; }
   else flowSince = 0;
   if (flowSince && now - flowSince > 120000 * FT && bar >= cooldownUntilBar) {
     buildAtBar = bar + 1;
@@ -549,16 +671,21 @@ function tick() {
   while (t0 + slot * P16 < ahead) { scheduleSlot(slot); slot++; }
 
   const now = performance.now();
-  keyTimes = keyTimes.filter(t => now - t < 12000);
-  const recent = keyTimes.filter(t => now - t < 6000).length;
-  mouseTimes = mouseTimes.filter(x => now - x < 6000);
-  const act = clamp((recent + Math.min(mouseTimes.length, 8) * 0.6) / 26, 0, 1);
-  smoothedAct += (act - smoothedAct) * 0.08;
+  keyTimes = keyTimes.filter(t => now - t < 45000);
+  const wpmKeys = keyTimes.filter(t => now - t < 12000).length;
+  const keyEnergy = keyTimes.reduce((s, t) => s + Math.exp(-(now - t) / 14000), 0);
+  mouseTimes = mouseTimes.filter(x => now - x < 30000);
+  const mouseEnergy = mouseTimes.reduce((s, t) => s + Math.exp(-(now - t) / 12000), 0);
+  const act = clamp((keyEnergy + Math.min(mouseEnergy, 8) * 0.55) / 42, 0, 1);
+  const rising = act > smoothedAct;
+  smoothedAct += (act - smoothedAct) * (rising ? 0.09 : 0.012);
 
   bsTimes = bsTimes.filter(x => now - x < 3000);
   const editBoost = Math.min(0.3, bsTimes.length * 0.06);   // deleting leans on the kit
   engine.drumBus.gain.setTargetAtTime(
-    drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 + editBoost : 0, ctx.currentTime, 0.8);
+    drumsOn ? Math.pow(smoothedAct, 1.15) * 0.9 + editBoost : 0,
+    ctx.currentTime,
+    rising ? 0.45 : 1.8);
   engine.masterFilter.frequency.setTargetAtTime(
     950 + smoothedAct * 1700 + (section === 'chorus' ? 400 : 0), ctx.currentTime, 1.2);
 
@@ -574,7 +701,7 @@ function tick() {
     }
   }
 
-  setChip('wpmChip', String(Math.round((keyTimes.length / 5) * (60 / 12))));
+  setChip('wpmChip', String(Math.round((wpmKeys / 5) * (60 / 12))));
   setChip('sectionChip', section);
   const bars = Math.round(smoothedAct * 5);
   setChip('flowChip', '▮'.repeat(bars) + '·'.repeat(5 - bars));
@@ -599,6 +726,7 @@ function anchorTransport(lead = 0.15) {
   slot = 0;
   lastWeaveBar = -2;   // bar counter restarts — don't leave the guards stranded ahead of it
   lastMotifBar = -4;
+  prevVoicing = null;
 }
 function tapeStopFx() {
   const now = ctx.currentTime + 0.02;
@@ -617,13 +745,19 @@ function startTransport() {
   anchorTransport();
   tickTimer = setInterval(tick, 25);
   running = true;
+  document.body.classList.add('rolling');   // the cassette reels turn
 }
 
 function setStyle(name) {
   STYLE = STYLES[name] || STYLES.lofi;
+  // the sky follows the style (see body.style-* in style.css)
+  const skyName = STYLES[name] ? name : 'lofi';
+  document.body.classList.remove('style-lofi', 'style-hiphop', 'style-arcade', 'style-drive', 'style-rain');
+  document.body.classList.add('style-' + skyName);
   SPB = 60 / STYLE.bpm;
   P16 = SPB / 4;
   combo = 0; comboTier = 0;
+  prevVoicing = null;
   setChip('comboChip', '·');
   if (started) {
     engine.buildBed();
@@ -652,16 +786,21 @@ function pushViz(midi, tier, vel, kind, g) {
 /* a registered word replayed through the current chord — the theme adapts */
 function echoMotif(chord, t) {
   const w = motifs[motifIdx++ % motifs.length];
-  const pcs = allowedPcs(chord, 1);
   const gid = ++motifGroup;
   let i = 0;
+  let prev = lastUserMidi;
   for (const ch of w) {
     let m = geoMidi(ch, false);
     if (m == null) continue;
-    m = snapMidi(m, pcs);
     m = foldToward(m, (weave.you + weave.cl) / 2);   // the motif threads the middle of the loom
+    m = snapMelodicMidi(m, chord, 1, {
+      n: slot + 4 + i,
+      prev,
+      center: (weave.you + weave.cl) / 2,
+    });
+    prev = m;
     if (m < 55) m += 12;                             // keep the kalimba out of the mud
-    playKalimba(m, 0.17, t + i * P16);
+    playKalimba(m, 0.17, t + i * P16 + humanDelay(slot + i, 'motif'));
     pushViz(m, 1, 0.3, 'motif', gid);
     i++;
   }
@@ -673,6 +812,7 @@ function handleChar(ch, shift) {
   const iki = now - lastKeyAt;
   lastKeyAt = now;
   keyTimes.push(now);
+  if (iki > 700) phraseNoteCount = 0;
   const d = density();
   const wasNL = lastCharNL;
   lastCharNL = ch === '\n';
@@ -686,6 +826,7 @@ function handleChar(ch, shift) {
 
   if (ch === '\b') {
     currentWord = '';               // a corrected word is not the word you meant
+    phraseNoteCount = 0;
     const { t } = quantized();
     playRim(t, 0.3);                // deletes join the groove, not the foreground
     bsTimes.push(now);
@@ -707,6 +848,7 @@ function handleChar(ch, shift) {
   }
   if (ch === '\n') {
     flushWord();
+    phraseNoteCount = 0;
     if (wasNL) advanceWeave(1 / 3, true);   // a paragraph is deliberate — it always turns the braid
     const { n, t } = quantized();
     hatTick(t, 0.45, true, true);
@@ -729,24 +871,30 @@ function handleChar(ch, shift) {
   if (ch in CADENCE) {
     flushWord();
     if (ch !== ',') advanceWeave(1 / 6);   // sentence ends turn the braid
+    phraseNoteCount = 0;
     const rootPc = (chord.root + keyOff) % 12;
     // fold the cadence root, then speak the interval — '.', ',', '?', '!' stay distinct
     let m = foldToward(60 + rootPc, weave.you - 7) + CADENCE[ch];
     if (m < 50) m += 12; else if (m > 88) m -= 12;
-    playMelody(m, ch === '!' ? 0.6 : 0.4, t + count * 0.033, 0, true);
+    playMelody(m, ch === '!' ? 0.6 : 0.4, melodyWhen(t, n, count, 'you', 1), 0, true);
     slotNotes.set(n, count + 1);
     lastWasBoundary = true;
     lastUserMidi = m; lastUserNoteAt = now;
+    lastUserWasTension = !isChordTone(chord, m);
     pushViz(m, 0, 0.5, 'note');
     if (ch === '?' && claudeOn && claudeQueue.length === 0) {
       // a question deserves an answer: 9th, down through the (chord's own) 7th, home
       const base = foldToward(72 + rootPc, weave.cl);   // answered from claude's side of the weave
       const pcs = allowedPcs(chord, 2);
-      playClaude(snapMidi(base + 14, pcs), 0.4, t + SPB);
-      playClaude(snapMidi(base + 10, pcs), 0.35, t + SPB * 1.5);
-      playClaude(base + 12, 0.45, t + SPB * 2);
-      pushViz(base + 14, 1, 0.4, 'claude');
-      pushViz(base + 12, 1, 0.4, 'claude');
+      const a = snapMidi(base + 14, pcs);
+      const b = snapMidi(base + 10, pcs);
+      const c = base + 12;
+      playClaude(a, 0.4, t + SPB + humanDelay(n + 8, 'claude'));
+      playClaude(b, 0.35, t + SPB * 1.5 + humanDelay(n + 12, 'claude'));
+      playClaude(c, 0.45, t + SPB * 2 + humanDelay(n + 16, 'claude'));
+      lastClaudeMidi = c;
+      pushViz(a, 1, 0.4, 'claude');
+      pushViz(c, 1, 0.4, 'claude');
     }
     return;
   }
@@ -760,8 +908,12 @@ function handleChar(ch, shift) {
     pushViz(92, 2, 0.25, 'perc');
     if ('{}[]()<>'.includes(ch)) {
       const rootPc = (chord.root + keyOff) % 12;
-      const bm = foldToward(74 + rootPc, weave.you);
-      playMelody(bm, 0.2, t, 2);
+      const bm = snapMelodicMidi(foldToward(74 + rootPc, weave.you), chord, 1, {
+        n, prev: lastUserMidi, center: weave.you, accented: true,
+      });
+      playMelody(bm, 0.2, melodyWhen(t, n, 0, 'you', 1), 1);
+      lastUserMidi = bm; lastUserNoteAt = now;
+      lastUserWasTension = !isChordTone(chord, bm);
       pushViz(bm, 2, 0.25, 'note');
     }
     lastWasBoundary = false;
@@ -778,10 +930,15 @@ function handleChar(ch, shift) {
   wordCharIdx = wordInitial ? 0 : wordCharIdx + 1;
   lastWasBoundary = false;
 
-  // density gate: mid-word common letters are the least informative notes —
-  // thin them first (ghost them, or rest them entirely when sparse)
-  if (!wordInitial && tier === 0 && !shift) {
-    if (d < 0.34 && wordCharIdx % 2 === 1) return;
+  // phrase gate: keep bursts shaped like gestures instead of filling every slot.
+  // Word starts and rare letters still get through; common mid-word letters give
+  // the phrase its breaths.
+  let phrasing = 'play';
+  if (!wordInitial && !shift) {
+    const cap = d > 0.72 ? 5 : d > 0.42 ? 4 : 3;
+    if (tier === 0 && d < 0.5 && wordCharIdx % 2 === 1) return;
+    if (phraseNoteCount >= cap && beatStrength(n) === 0 && tier < 2) return;
+    if (tier === 0 && phraseNoteCount >= 2 && d < 0.72 && n % 2 === 1) phrasing = 'ghost';
   }
 
   let midi;
@@ -792,19 +949,32 @@ function handleChar(ch, shift) {
     midi = geoMidi(ch, true);
     if (midi == null) return;
     midi = clamp(midi, 50, 88);
-    midi = snapMidi(midi, allowedPcs(chord, tier));
   }
   midi = foldToward(midi, weave.you);   // the weave decides the octave; the key decides the note
+  if (!(mapping === 'alpha' && isLetter)) {
+    midi = snapMelodicMidi(midi, chord, tier, {
+      n,
+      wordInitial,
+      accented: shift,
+      resolving: lastUserWasTension,
+      prev: lastUserMidi,
+      center: weave.you,
+    });
+  }
 
   let vel = 0.36;
   if (wordInitial) vel += 0.13;
   if (shift) vel += 0.12;
   if (!wordInitial && tier === 0 && !shift) vel = 0.10 + d * 0.18;
+  if (phrasing === 'ghost') vel *= 0.45;
   if (iki < 90) vel *= 0.88;
 
-  playMelody(midi, vel, t + count * 0.033, tier);
+  const when = melodyWhen(t, n, count, 'you', wordInitial || shift ? 1 : 0);
+  playMelody(midi, vel, when, tier);
   slotNotes.set(n, count + 1);
   lastUserMidi = midi; lastUserNoteAt = now;
+  lastUserWasTension = !isChordTone(chord, midi);
+  phraseNoteCount++;
   pushViz(midi, tier, vel, 'note');
 
   // arcade combo streaks: keep the run alive and the lead sprouts harmonies
@@ -816,10 +986,10 @@ function handleChar(ch, shift) {
     if (newTier > comboTier) {
       comboTier = newTier;
       sparkBurst(midi);
-      playPulse(96, 0.3, t, 0);
+      playPulse(96, 0.3, when, 0);
     }
-    if (comboTier >= 1) playPulse(snapMidi(midi + 4, allowedPcs(chord, 1)), vel * 0.4, t, 0);
-    if (comboTier >= 2) playPulse(snapMidi(midi + 7, allowedPcs(chord, 1)), vel * 0.35, t, 0);
+    if (comboTier >= 1) playPulse(snapMidi(midi + 4, allowedPcs(chord, 1)), vel * 0.4, when, 0);
+    if (comboTier >= 2) playPulse(snapMidi(midi + 7, allowedPcs(chord, 1)), vel * 0.35, when, 0);
     setChip('comboChip', combo >= 5 ? combo + '×' : '·');
   }
 }
@@ -852,8 +1022,11 @@ function claudeStep(item) {
   }
   if (ch in CADENCE) {
     const rootPc = (chord.root + keyOff) % 12;
-    const cm = foldToward(72 + rootPc + CADENCE[ch], weave.cl);
-    playClaude(cm, 0.4, t);
+    const cm = snapMelodicMidi(foldToward(72 + rootPc + CADENCE[ch], weave.cl), chord, 1, {
+      n, prev: lastClaudeMidi, center: weave.cl, accented: true,
+    });
+    playClaude(cm, 0.4, melodyWhen(t, n, 0, 'claude', 1));
+    lastClaudeMidi = cm;
     pushViz(cm, 1, 0.35, 'claude');
     claudeBoundary = true;
     return;
@@ -894,8 +1067,14 @@ function claudeStep(item) {
   } else {
     midi = geoMidi(ch, false);
     if (midi == null) return;
-    midi = snapMidi(midi, allowedPcs(chord, tier));
     midi = clamp(foldToward(midi, weave.cl), 40, 98);
+    midi = snapMelodicMidi(midi, chord, tier, {
+      n,
+      wordInitial,
+      prev: lastClaudeMidi,
+      center: weave.cl,
+      resolving: lastClaudeMidi && !isChordTone(chord, lastClaudeMidi),
+    });
   }
 
   let vel = 0.22 + (idleLead ? 0.1 : 0);
@@ -905,10 +1084,11 @@ function claudeStep(item) {
 
   if (weave.lead < 0.35) {                 // on top, claude earns the lead instrument
     claudeVoicing = true;
-    leadVoice(midi, vel, t, tier, 1 - weave.lead);
+    leadVoice(midi, vel, melodyWhen(t, n, 0, 'claude'), tier, 1 - weave.lead);
     claudeVoicing = false;
-  } else playClaude(midi, vel, t);
+  } else playClaude(midi, vel, melodyWhen(t, n, 0, 'claude'));
   claudeLastNoteAt = performance.now();
+  lastClaudeMidi = midi;
   pushViz(midi, tier, vel, 'claude');
 }
 function drainClaude() {
@@ -1191,6 +1371,7 @@ if (powerBtn) powerBtn.addEventListener('click', async () => {
     await ctx.suspend();
     clearInterval(tickTimer);
     running = false;
+    document.body.classList.remove('rolling');
     if (recorder && recorder.state === 'recording') toggleRec();
     stopDemo();
     powerBtn.textContent = 'Resume';
@@ -1199,6 +1380,7 @@ if (powerBtn) powerBtn.addEventListener('click', async () => {
     anchorTransport();               // resume clean at bar 1 (style/tempo may have changed)
     tickTimer = setInterval(tick, 25);
     running = true;
+    document.body.classList.add('rolling');
     powerBtn.textContent = 'Pause';
     if (pad) pad.focus();
   }
@@ -1207,7 +1389,7 @@ if (powerBtn) powerBtn.addEventListener('click', async () => {
 const styleSel = $('styleSel');
 if (styleSel) styleSel.addEventListener('change', e => { setStyle(e.target.value); jrnSet('style', e.target.value); });
 const keySel = $('keySel');
-if (keySel) keySel.addEventListener('change', e => { keyOff = +e.target.value; jrnSet('key', keyOff); });
+if (keySel) keySel.addEventListener('change', e => { keyOff = +e.target.value; prevVoicing = null; jrnSet('key', keyOff); });
 const mapSel = $('mapSel');
 if (mapSel) mapSel.addEventListener('change', e => { mapping = e.target.value; jrnSet('mapping', mapping); });
 const drumsChk = $('drumsChk');
@@ -1232,6 +1414,28 @@ if (crackleRange) crackleRange.addEventListener('input', () => {
   if (engine) engine.setCrackle(cracLevel());
   jrnSet('crackle', val('crackleRange', 45));
 });
+
+/* ---------- the hint line: point at a control, read what it does ---------- */
+const hintLine = $('hintLine');
+if (hintLine) {
+  const idleHint = hintLine.textContent;
+  const showHint = el => {
+    const label = el.querySelector('label');
+    hintLine.textContent = '';
+    if (label) {
+      const b = document.createElement('b');
+      b.textContent = label.textContent;
+      hintLine.append(b, ' — ');
+    }
+    hintLine.append(el.dataset.hint);
+  };
+  for (const el of document.querySelectorAll('[data-hint]')) {
+    el.addEventListener('pointerenter', () => showHint(el));
+    el.addEventListener('pointerleave', () => { hintLine.textContent = idleHint; });
+    el.addEventListener('focusin', () => showHint(el));
+    el.addEventListener('focusout', () => { hintLine.textContent = idleHint; });
+  }
+}
 
 /* ---------- recording ---------- */
 function toggleRec() {
@@ -1355,7 +1559,7 @@ const viz = $('viz');
 if (viz) {
   const vctx = viz.getContext('2d');
   const PRM = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const TIER_COLORS = ['#e2a65b', '#8fbdad', '#ce8398'];
+  const TIER_COLORS = ['#ffb26b', '#7fd4e4', '#f27ab8'];
   const SPEED = 76; // px/s — notes ride the whole way across, like a piano roll
 
   const drawViz = () => {
@@ -1368,7 +1572,7 @@ if (viz) {
     vctx.clearRect(0, 0, W, H);
 
     vctx.font = '48px "American Typewriter", Georgia, serif';
-    vctx.fillStyle = 'rgba(234,224,208,0.05)';
+    vctx.fillStyle = 'rgba(236,230,244,0.05)';
     vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
     const chip = $('chordChip');
     vctx.fillText(chip ? chip.textContent : '', W / 2, H / 2);
@@ -1376,7 +1580,7 @@ if (viz) {
     if (running && ctx) {
       const beat = Math.floor(((ctx.currentTime - t0) / SPB) % 4);
       for (let b = 0; b < 4; b++) {
-        vctx.fillStyle = b === beat ? 'rgba(226,166,91,0.85)' : 'rgba(234,224,208,0.12)';
+        vctx.fillStyle = b === beat ? 'rgba(255,178,107,0.85)' : 'rgba(236,230,244,0.12)';
         vctx.fillRect(12 + b * 14, H - 10, 8, 3);
       }
     }
@@ -1399,7 +1603,7 @@ if (viz) {
       }
       const y = H - 14 - ((clamp(nn.midi, 40, 96) - 40) / 56) * (H - 28);
       if (nn.kind === 'perc') {
-        vctx.fillStyle = 'rgba(138,123,108,' + (alpha * 0.7).toFixed(3) + ')';
+        vctx.fillStyle = 'rgba(163,150,191,' + (alpha * 0.7).toFixed(3) + ')';
         vctx.fillRect(x - 2, y - 2, 4, 4);
       } else if (nn.kind === 'spark') {
         vctx.fillStyle = TIER_COLORS[nn.tier] + Math.round(alpha * 255).toString(16).padStart(2, '0');
@@ -1407,7 +1611,7 @@ if (viz) {
       } else if (nn.kind === 'telem') {
         vctx.save();
         vctx.translate(x, y); vctx.rotate(Math.PI / 4);
-        vctx.fillStyle = 'rgba(226,166,91,' + (alpha * 0.9).toFixed(3) + ')';
+        vctx.fillStyle = 'rgba(255,178,107,' + (alpha * 0.9).toFixed(3) + ')';
         vctx.fillRect(-3, -3, 6, 6);
         vctx.restore();
       } else if (nn.kind === 'motif') {
@@ -1415,12 +1619,12 @@ if (viz) {
         motifLines.get(nn.g).push({ x, y, alpha });
         vctx.beginPath();
         vctx.arc(x, y, 2.2, 0, Math.PI * 2);
-        vctx.fillStyle = '#eae0d0' + Math.round(alpha * 150).toString(16).padStart(2, '0');
+        vctx.fillStyle = '#ece6f4' + Math.round(alpha * 150).toString(16).padStart(2, '0');
         vctx.fill();
       } else if (nn.kind === 'claude') {
         vctx.beginPath();
         vctx.arc(x, y, 2.5 + nn.vel * 5, 0, Math.PI * 2);
-        vctx.strokeStyle = '#8fbdad' + Math.round(alpha * 210).toString(16).padStart(2, '0');
+        vctx.strokeStyle = '#7fd4e4' + Math.round(alpha * 210).toString(16).padStart(2, '0');
         vctx.lineWidth = 1.4;
         vctx.stroke();
       } else {
@@ -1436,7 +1640,7 @@ if (viz) {
       vctx.beginPath();
       vctx.moveTo(pts[0].x, pts[0].y);
       for (let p = 1; p < pts.length; p++) vctx.lineTo(pts[p].x, pts[p].y);
-      vctx.strokeStyle = 'rgba(234,224,208,' + (pts[0].alpha * 0.35).toFixed(3) + ')';
+      vctx.strokeStyle = 'rgba(236,230,244,' + (pts[0].alpha * 0.35).toFixed(3) + ')';
       vctx.lineWidth = 1;
       vctx.stroke();
     }

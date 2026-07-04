@@ -12,7 +12,7 @@
     background: var(--shell); border: 1px solid var(--line); border-radius: 10px;
     padding: 18px 22px; display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
   }
-  .cassette canvas { width: 240px; height: 120px; background: #0e0b09; border: 1px solid var(--line); border-radius: 5px; }
+  .cassette canvas { width: 240px; height: 120px; background: #0b081a; border: 1px solid var(--line); border-radius: 5px; }
   .cassette .info { flex: 1; min-width: 220px; }
   .cassette h2 { font-family: var(--font-display); font-weight: 400; font-size: 17px; letter-spacing: .06em; margin: 0 0 6px; }
   .cassette .meta { font-family: var(--font-mono); font-size: 12px; color: var(--dim); }
@@ -53,7 +53,7 @@ import { idbOpen, idbSessions, idbSessionEvents, idbDelete } from './engine/idb.
 const $ = id => document.getElementById(id);
 const rawPack = fetchSamplePack();
 const RENDER_CAP_S = 45 * 60;
-const TIER_COLORS = ['#e2a65b', '#8fbdad', '#ce8398'];
+const TIER_COLORS = ['#ffb26b', '#7fd4e4', '#f27ab8'];
 const DRUM_EVENTS = new Set(['kick', 'snare', 'ckick', 'csnare', 'rkick', 'gsnare', 'shaker', 'rim', 'hat', 'scratch']);
 const DUR_DEFAULT = {
   rhodes: 1.5, saw: 0.75, pulse: 0.32, kalimba: 1.8, claude: 1.35, osc: 1.2,
@@ -119,20 +119,20 @@ function title(item) {
 function drawCover(canvas, events, duration) {
   const W = canvas.width = 480, H = canvas.height = 240;
   const c = canvas.getContext('2d');
-  c.fillStyle = '#0e0b09'; c.fillRect(0, 0, W, H);
+  c.fillStyle = '#0b081a'; c.fillRect(0, 0, W, H);
   const dur = Math.max(duration, 1);
   for (const ev of events) {
     if (typeof ev.t !== 'number') continue;
     const x = (ev.t / dur) * (W - 16) + 8;
     if (DRUM_EVENTS.has(ev.e)) {
-      c.fillStyle = 'rgba(138,123,108,0.25)';
+      c.fillStyle = 'rgba(163,150,191,0.25)';
       c.fillRect(x, H - 18 + (ev.e.charCodeAt(0) % 10), 2, 2);
       continue;
     }
     if (typeof ev.m !== 'number') continue;
     const y = H - 24 - ((clamp(ev.m, 36, 96) - 36) / 60) * (H - 44);
     if (ev.e === 'claude' || ev.c) {
-      c.strokeStyle = 'rgba(143,189,173,0.5)';
+      c.strokeStyle = 'rgba(127,212,228,0.5)';
       c.strokeRect(x - 1.5, y - 1.5, 3, 3);
     } else {
       const tier = (ev.o && ev.o.tier) ?? ev.x ?? 1;
@@ -140,7 +140,7 @@ function drawCover(canvas, events, duration) {
       c.fillRect(x - 1.5, y - 1.5, 3, 3);
     }
   }
-  c.fillStyle = 'rgba(234,224,208,0.35)';
+  c.fillStyle = 'rgba(236,230,244,0.35)';
   c.font = '10px ui-monospace, monospace';
   c.fillText('keystrokes', 10, H - 8);
 }

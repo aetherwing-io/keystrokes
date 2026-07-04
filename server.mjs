@@ -3,7 +3,7 @@
  * keystrokes hub — serves the live engine page and fans events into it.
  *
  *   browser page  <--SSE--  this server  <--UDP:8124--  tap.py (your keys)
- *                                        <--fs.watch--  ~/.claude/projects/*.jsonl (Claude's characters)
+ *                                        <--fs.watch--  Claude/Codex transcripts
  *
  * Zero dependencies. Binds to 127.0.0.1 only. Keystrokes and characters flow
  * through memory and are gone. The one thing persisted is the session journal
@@ -19,7 +19,15 @@ import os from 'node:os';
 
 const PORT = Number(process.env.KEYSTROKES_PORT || 8123);
 const UDP_PORT = Number(process.env.KEYSTROKES_UDP || 8124);
-const WATCH = process.env.KEYSTROKES_WATCH || path.join(os.homedir(), '.claude', 'projects');
+const CLAUDE_WATCH = process.env.KEYSTROKES_CLAUDE_WATCH ||
+  process.env.KEYSTROKES_WATCH ||
+  path.join(os.homedir(), '.claude', 'projects');
+const CODEX_WATCH = process.env.KEYSTROKES_CODEX_WATCH ||
+  path.join(os.homedir(), '.codex', 'sessions');
+const WATCHES = [
+  { name: 'claude', dir: CLAUDE_WATCH },
+  { name: 'codex', dir: CODEX_WATCH },
+].filter(w => w.dir && !/^(0|false|off)$/i.test(w.dir));
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 
 /* ---------- SSE hub ---------- */
@@ -140,7 +148,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`keystrokes hub  →  http://localhost:${PORT}`);
   console.log(`key tap in on   →  udp://127.0.0.1:${UDP_PORT}`);
-  console.log(`claude tail on  →  ${WATCH}`);
+  for (const w of WATCHES) console.log(`${w.name} tail on  →  ${w.dir}`);
 });
 
 /* ---------- keystroke tap (UDP in) ---------- */
@@ -236,10 +244,11 @@ async function listSessions() {
   return out.sort((a, b) => (a.id < b.id ? 1 : -1));
 }
 
-/* ---------- Claude transcript tailer ---------- */
+/* ---------- assistant transcript tailer ---------- */
 const offsets = new Map();   // file path -> bytes already consumed
 const partials = new Map();  // file path -> trailing partial line
 const pending = new Map();   // file path -> debounce timer
+const tailStartedAt = Date.now();
 
 function listJsonl(dir) {
   const out = [];
@@ -254,19 +263,52 @@ function listJsonl(dir) {
 }
 
 // start from "now": existing history is not replayed
-for (const f of listJsonl(WATCH)) {
-  try { offsets.set(f, fs.statSync(f).size); } catch { /* vanished */ }
+for (const w of WATCHES) {
+  for (const f of listJsonl(w.dir)) {
+    try { offsets.set(f, fs.statSync(f).size); } catch { /* vanished */ }
+  }
 }
 
-/* tool telemetry: pair tool_use (assistant lines) with tool_result (user lines)
+/* tool telemetry: pair tool_use/function_call with tool_result/function_call_output
  * so the engine can hear starts, successes, errors, tests, and commits. */
 const pendingTools = new Map();   // fileKey -> Map(tool_use_id -> {name, cmd})
 let lastTelemAt = 0;
 const TELEM_MIN_GAP = 250;        // ms between low-priority telemetry events
 
-function extractEvents(line, fkey) {
-  let obj;
-  try { obj = JSON.parse(line); } catch { return []; }
+function toolMap(fkey) {
+  let m = pendingTools.get(fkey);
+  if (!m) { m = new Map(); pendingTools.set(fkey, m); }
+  return m;
+}
+function rememberTool(fkey, id, name, cmd) {
+  if (!id || !name) return;
+  const m = toolMap(fkey);
+  m.set(id, { name, cmd: cmd || '' });
+  if (m.size > 40) m.delete(m.keys().next().value);
+}
+function toolEnded(fkey, id) {
+  const m = pendingTools.get(fkey);
+  const info = m && m.get(id);
+  if (info) m.delete(id);
+  return info;
+}
+function toolDoneEvent(fkey, info, ok) {
+  if (!info) return null;
+  const isBash = info.name === 'Bash' || /(^|__)bash$/i.test(info.name);
+  return {
+    src: 'claude', kind: 'tool', phase: 'end', tool: info.name, f: fkey,
+    ok,
+    test: isBash && /\btest\b/i.test(info.cmd),
+    commit: isBash && /\bgit commit\b/.test(info.cmd),
+  };
+}
+function codexToolName(name) {
+  if (name === 'exec_command') return 'Bash';
+  if (name === 'apply_patch') return 'Edit';
+  if (name === 'web.run') return 'WebFetch';
+  return name || 'tool';
+}
+function extractClaudeEvents(obj, fkey) {
   const events = [];
   if (obj.type === 'assistant' && obj.message && Array.isArray(obj.message.content)) {
     for (const item of obj.message.content) {
@@ -278,13 +320,8 @@ function extractEvents(line, fkey) {
           events.push({ src: 'claude', text: t.slice(0, 1200), code: true });
         }
         if (item.id && item.name) {
-          let m = pendingTools.get(fkey);
-          if (!m) { m = new Map(); pendingTools.set(fkey, m); }
-          m.set(item.id, {
-            name: item.name,
-            cmd: typeof item.input.command === 'string' ? item.input.command : '',
-          });
-          if (m.size > 40) m.delete(m.keys().next().value);
+          rememberTool(fkey, item.id, item.name,
+            typeof item.input.command === 'string' ? item.input.command : '');
           events.push({ src: 'claude', kind: 'tool', phase: 'start', tool: item.name, f: fkey });
         }
       }
@@ -292,24 +329,46 @@ function extractEvents(line, fkey) {
   } else if (obj.type === 'user' && obj.message && Array.isArray(obj.message.content)) {
     for (const item of obj.message.content) {
       if (item && item.type === 'tool_result' && item.tool_use_id) {
-        const m = pendingTools.get(fkey);
-        const info = m && m.get(item.tool_use_id);
-        if (!info) continue;
-        m.delete(item.tool_use_id);
-        const isBash = info.name === 'Bash' || /(^|__)bash$/i.test(info.name);
-        events.push({
-          src: 'claude', kind: 'tool', phase: 'end', tool: info.name, f: fkey,
-          ok: item.is_error !== true,
-          test: isBash && /\btest\b/i.test(info.cmd),
-          commit: isBash && /\bgit commit\b/.test(info.cmd),
-        });
+        const ev = toolDoneEvent(fkey, toolEnded(fkey, item.tool_use_id), item.is_error !== true);
+        if (ev) events.push(ev);
       }
     }
   }
   return events;
 }
+function extractCodexEvents(obj, fkey) {
+  const events = [];
+  const p = obj && obj.payload;
+  if (obj.type === 'event_msg' && p && p.type === 'agent_message' &&
+      typeof p.message === 'string' && p.message.trim()) {
+    events.push({ src: 'claude', text: p.message.slice(0, 1500), code: false, from: 'codex' });
+    return events;
+  }
+  if (obj.type !== 'response_item' || !p) return events;
+  if (p.type === 'function_call') {
+    const name = codexToolName(p.name);
+    let cmd = '';
+    try {
+      const args = typeof p.arguments === 'string' ? JSON.parse(p.arguments) : p.arguments;
+      cmd = typeof args?.cmd === 'string' ? args.cmd : '';
+    } catch { /* arguments may be a non-json string */ }
+    rememberTool(fkey, p.call_id || p.id, name, cmd);
+    events.push({ src: 'claude', kind: 'tool', phase: 'start', tool: name, f: fkey });
+  } else if (p.type === 'function_call_output') {
+    const out = typeof p.output === 'string' ? p.output : '';
+    const ok = !/(Process exited with code|Exit code:)\s*[1-9]\d*/.test(out);
+    const ev = toolDoneEvent(fkey, toolEnded(fkey, p.call_id || p.id), ok);
+    if (ev) events.push(ev);
+  }
+  return events;
+}
+function extractEvents(line, fkey, source) {
+  let obj;
+  try { obj = JSON.parse(line); } catch { return []; }
+  return source === 'codex' ? extractCodexEvents(obj, fkey) : extractClaudeEvents(obj, fkey);
+}
 
-function flushFile(f) {
+function flushFile(f, source) {
   pending.delete(f);
   let size;
   try { size = fs.statSync(f).size; } catch { return; }
@@ -331,11 +390,11 @@ function flushFile(f) {
   const lines = chunk.split('\n');
   partials.set(f, lines.pop() || '');
 
-  const fkey = path.basename(f, '.jsonl').slice(0, 8);
+  const fkey = source + ':' + path.basename(f, '.jsonl').slice(0, 8);
   let emitted = 0;
   for (const line of lines) {
     if (!line.trim()) continue;
-    for (const ev of extractEvents(line, fkey)) {
+    for (const ev of extractEvents(line, fkey, source)) {
       if (ev.kind === 'tool') {
         // errors, tests, and commits always pass; routine start/ok ticks are throttled
         const important = ev.phase === 'end' && (!ev.ok || ev.test || ev.commit);
@@ -352,13 +411,31 @@ function flushFile(f) {
   }
 }
 
-try {
-  fs.watch(WATCH, { recursive: true }, (_event, filename) => {
-    if (!filename || !filename.endsWith('.jsonl')) return;
-    const f = path.join(WATCH, filename);
-    if (pending.has(f)) return;
-    pending.set(f, setTimeout(() => flushFile(f), 60));
-  });
-} catch (err) {
-  console.log(`(claude tail disabled: cannot watch ${WATCH}: ${err.message})`);
+function scanWatch(w) {
+  for (const f of listJsonl(w.dir)) {
+    let st;
+    try { st = fs.statSync(f); } catch { continue; }
+    if (!offsets.has(f)) {
+      // Old history stays quiet, but a newly-created active transcript should
+      // be heard from its first line.
+      offsets.set(f, st.mtimeMs >= tailStartedAt - 2000 ? 0 : st.size);
+    }
+    if (st.size > (offsets.get(f) ?? 0) && !pending.has(f)) {
+      pending.set(f, setTimeout(() => flushFile(f, w.name), 20));
+    }
+  }
+}
+
+for (const w of WATCHES) {
+  try {
+    fs.watch(w.dir, { recursive: true }, (_event, filename) => {
+      if (!filename || !filename.endsWith('.jsonl')) { scanWatch(w); return; }
+      const f = path.join(w.dir, filename);
+      if (pending.has(f)) return;
+      pending.set(f, setTimeout(() => flushFile(f, w.name), 60));
+    });
+  } catch (err) {
+    console.log(`(${w.name} tail disabled: cannot watch ${w.dir}: ${err.message})`);
+  }
+  setInterval(() => scanWatch(w), 1200);
 }

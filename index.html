@@ -10,12 +10,15 @@
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎹</text></svg>">
 </head>
-<body>
+<body class="fullpage style-lofi">
 
 <div class="deck">
   <header>
-    <h1>KEYSTROKES<span class="cursor">_</span></h1>
-    <span class="tagline">side A · a lofi instrument for people who type</span>
+    <span class="tapebadge" aria-hidden="true"><i class="reel"></i><i class="reel"></i></span>
+    <div class="brand">
+      <h1>KEYSTROKES<span class="cursor">_</span></h1>
+      <span class="tagline">side A · a lofi instrument for people who type</span>
+    </div>
     <div class="transport">
       <button class="btn rec" id="recBtn" title="Record the output to a downloadable audio file"><span class="dot"></span>Rec</button>
       <button class="btn power" id="powerBtn">Start the tape</button>
@@ -37,28 +40,29 @@
   <canvas id="viz"></canvas>
 
   <div class="controls">
-    <div class="ctl">
+    <div class="ctl" data-hint="swaps the whole vibe — instrument, tempo, drums, and the background bed — while your keys keep steering">
       <label for="styleSel">Style</label>
       <select id="styleSel">
         <option value="lofi" selected>Lofi tape</option>
+        <option value="hiphop">Hip-hop</option>
         <option value="arcade">Arcade (8-bit)</option>
         <option value="drive">Night drive</option>
         <option value="rain">Rainy day</option>
       </select>
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="master volume for everything">
       <label for="volRange">Volume</label>
       <input type="range" id="volRange" min="0" max="100" value="75">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="how busy the melody is — low thins common mid-word letters to ghost notes and rests, high plays nearly every key">
       <label for="densRange">Density</label>
       <input type="range" id="densRange" min="0" max="100" value="50">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="how far forward the melody sits — level and brightness of the lead voice over the backing">
       <label for="leadRange">Lead</label>
       <input type="range" id="leadRange" min="0" max="100" value="45">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="the key everything is tuned to — every note snaps into it, so nothing you type can be out of tune">
       <label for="keySel">Key</label>
       <select id="keySel">
         <option value="0" selected>C</option>
@@ -68,26 +72,27 @@
         <option value="9">A</option>
       </select>
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="how keys become pitches — geography follows your hands (row = register, column = scale step); the raw cryptogram skips the tuning, so you can hear why it matters">
       <label for="mapSel">Mapping</label>
       <select id="mapSel">
         <option value="geo" selected>Keyboard geography</option>
         <option value="alpha">Alphabet cryptogram (raw)</option>
       </select>
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="the shuffle in the beat — left is straight and even, right delays every offbeat 16th into a lope">
       <label for="swingRange">Swing</label>
       <input type="range" id="swingRange" min="0" max="34" value="15">
     </div>
-    <div class="ctl">
+    <div class="ctl" data-hint="level of the background bed — vinyl crackle, tape hiss, or rain, depending on style">
       <label for="crackleRange">Texture</label>
       <input type="range" id="crackleRange" min="0" max="100" value="45">
     </div>
-    <div class="ctl check">
+    <div class="ctl check" data-hint="the kit — uncheck for just keys, chords, and texture">
       <input type="checkbox" id="drumsChk" checked>
       <label for="drumsChk">Drums</label>
     </div>
-    <button class="btn demo" id="demoBtn">Auto-type a demo</button>
+    <div class="hintline" id="hintLine">point at any control and this line will tell you what it does</div>
+    <button class="btn demo" id="demoBtn" data-hint="types a short text into the pad by itself, so you can hear the instrument play">Auto-type a demo</button>
   </div>
 </div>
 
@@ -96,18 +101,11 @@
     <span class="l0">chord tone (common letters)</span>
     <span class="l1">pentatonic (mid)</span>
     <span class="l2">color tone (rare letters)</span>
-    <span><a href="shelf.html" style="color: var(--amber)">your shelf →</a></span>
+    <span><a href="shelf.html">your shelf →</a></span>
   </div>
-  <span class="privacy">Runs entirely in your browser. Your text never leaves the page; each session's <em>notes</em> are taped to this browser so you can replay them from the shelf.</span>
+  <span class="promoline">This page is the demo — the full version scores your whole desk, Claude Code sessions included. <a href="https://github.com/aetherwing-io/keystrokes">get keystrokes ↗</a></span>
+  <span class="privacy">Runs entirely in your browser; your text never leaves the page.</span>
 </footer>
-
-<div class="promo">
-  <b>This page is the demo.</b> The full version scores your whole desk: every
-  app you type in becomes the lead voice, and the characters your Claude Code
-  sessions generate play a second music-box voice alongside you. Local-only,
-  no accounts, one script to start —
-  <a href="https://github.com/aetherwing-io/keystrokes">get keystrokes on GitHub</a>.
-</div>
 
 <script type="module">
   import { enableJournal } from './engine/main.js';

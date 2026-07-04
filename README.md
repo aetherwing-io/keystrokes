@@ -11,13 +11,12 @@ Two ways to play:
   steered by your keys. Runs entirely in the browser; nothing is stored or
   sent anywhere. This is the demo for —
 - **The session soundtrack** — `./start.sh`: system-wide. Your keys in any
-  app become the lead voice; the characters Claude Code generates (in every
-  session, across all your projects) become a second music-box voice, panned
-  right and drawn as outlined dots. No queue, no track picking — the music of
-  the work, as you work it.
+  app become the lead voice; the characters Claude Code and Codex generate
+  become a second, warmer melodic voice, panned right and drawn as outlined
+  dots. No queue, no track picking — the music of the work, as you work it.
 
 (`keystrokes-lofi.html` is the original self-contained single-file version,
-kept for the claude.ai artifact; the shared engine now lives in `engine.js`.)
+kept for the claude.ai artifact; the shared engine now lives in `engine/`.)
 
 ## Quick start (session soundtrack)
 
@@ -34,13 +33,20 @@ permission (System Settings → Privacy & Security → Accessibility) the first
 time — the tap can't see keys without it, and notes will simply not play for
 typing outside the page until you grant it.
 
+**Platform**: `start.sh` is macOS-shaped — it uses `open` to launch the
+browser — but nothing else is. The hub (`server.mjs`, Node `fs.watch`) and the
+browser engine are OS-agnostic, and the tap (`pynput`) runs on Linux (X11) and
+Windows too. Elsewhere, start the pieces by hand: `node server.mjs`, open
+`http://localhost:8123`, then `python tap.py`. Windows needs no Accessibility
+prompt; the secure-input password silencing (see Privacy) is macOS-only.
+
 ## Architecture
 
 ```
-your keys, any app          claude's characters
+your keys, any app          assistant characters
       │                            │
-   tap.py (pynput)          ~/.claude/projects/**/*.jsonl
-      │ udp :8124                  │ fs.watch tail (assistant text + tool_use code)
+   tap.py (pynput)          ~/.claude/projects/**/*.jsonl + ~/.codex/sessions/**/*.jsonl
+      │ udp :8124                  │ fs.watch tail (assistant text + tool calls)
       ▼                            ▼
               server.mjs  (zero-dep node hub, 127.0.0.1 only)
                           │ SSE /events
@@ -56,6 +62,7 @@ and background texture — while your keys keep steering:
 | Style | Lead | Groove | Bed |
 |---|---|---|---|
 | **Lofi tape** | sampled Rhodes | 76 BPM boom-bap, swung | vinyl crackle |
+| **Hip-hop** | sampled Rhodes | 90 BPM head-nod: syncopated kicks, big backbeat, long sub on the one; minor two-bar loops | vinyl crackle |
 | **Arcade (8-bit)** | pulse-wave chip lead | 112 BPM chip kit + chord arp | tape hiss |
 | **Night drive** | detuned saw lead | 92 BPM four-on-floor, gated snare, octave bass | tape hiss |
 | **Rainy day** | kalimba | 62 BPM near-still, chords every 2 bars, drone bass | rain |
@@ -67,7 +74,7 @@ Typing into the pad auto-starts the tape — no button needed.
 ## Telemetry you can feel
 
 The local version doesn't just hear characters — it hears the *work*. Tool
-activity in your Claude sessions becomes musical punctuation:
+activity in your Claude and Codex sessions becomes musical punctuation:
 
 - a **Bash command running** is a low tape-motor rumble that stops when it exits
 - an **error** brings in a suspended chord that *holds* until the next success
@@ -107,9 +114,21 @@ Single renders cap at 45 minutes; longer sessions render a chosen range.
 - **Leitmotifs**: any word you type 4+ times becomes a quiet counter-melody
   echoed at chord changes, adapted to the current harmony. Your project's
   vocabulary writes its own theme.
-- **The duet is real**: Claude notes landing within 350ms of yours harmonize
-  a third above; typing `?` gets a three-note answer; when you idle to read,
-  Claude's voice takes the lead.
+- **The duet is real**: assistant notes landing within 350ms of yours harmonize
+  a third off your note — above or below, toward whichever register it's holding
+  (see the weave); typing `?` gets a three-note answer; when you idle to read,
+  the assistant voice takes the lead.
+- **The weave**: the two melodic voices braid registers over time. Their centers
+  mirror and cross, so who sits on top — with the presence and brightness that
+  come with it — trades back and forth. The braid turns at sentence, paragraph,
+  and 8-bar boundaries: when the assistant is underneath it harmonizes below
+  with a warm sub, and when it climbs on top it borrows your lead instrument. A
+  chorus pins you on top with the assistant tucked warm beneath.
+- **The mouse is company too** (in the browser): pointer glides land as soft,
+  quantized kalimba ghosts — higher on the window sings higher, a quick flick
+  leans in — and clicks keep time on the rim. Mouse motion counts as presence,
+  so scrolling and reading hold the groove open and defer the break; drags and
+  touch stay silent.
 - **Arcade combos**: keep a typing streak alive in Arcade style and
   the chip lead sprouts harmonies at 20, 50, and 100 — with pixel fireworks.
 - **Settings persist**: sliders and toggles are remembered per browser, so
@@ -122,13 +141,16 @@ Engine behavior worth knowing:
 - **Your voice** drives everything: drums and brightness follow *your*
   rolling activity, so the track builds when you're in flow and mellows to
   chords-and-crackle when you stop to read.
-- **Claude's voice** is purely melodic — a soft music box an octave up,
-  panned right. Message-sized bursts are paced out through a queue at a
-  humanized typing rate; backlogs drain faster and are thinned rather than
-  machine-gunned. It never drives the drums: when you idle while Claude
-  generates, you're listening to Claude think, quietly.
+- **Assistant voice** is purely melodic — panned right, drawn as outlined dots,
+  its register set by the weave rather than pinned an octave up. Message-sized
+  bursts are paced out through a queue at a humanized typing rate; backlogs
+  drain faster and are thinned rather than machine-gunned. It never drives the
+  drums: when you idle while Claude or Codex generates, you're listening to the
+  assistant think, quietly.
 - **Long sessions**: three chord progressions in the same key family rotate
-  every 8 bars, and one bar in eight the piano lays out to breathe.
+  every 8 bars, one bar in eight the piano lays out to breathe, and the kit
+  never loops flat — kick patterns swap, ghost snares and breath bars come and
+  go, and the odd bar gets a pickup-kick fill.
 
 ## Why this can sound good (the core insight)
 
@@ -154,7 +176,7 @@ unquantized chromatic noise. The fix is to invert the responsibility:
 | Space | Hi-hat tick. Avg English word ≈ 4.7 letters, so the spacebar arrives with pulse-like regularity — it *is* the hi-hat. Also marks word boundaries → next letter gets an accent. |
 | Punctuation | Cadences with speech prosody: `.` resolves to the root, `,` rests on the 5th, `?` rises to the 9th, `!` accents the octave. |
 | Enter | Open-hat splash + bass octave (paragraph = phrase boundary). |
-| Backspace | Record scratch. Regret, sonified. |
+| Backspace | Rim tick — a delete joins the groove instead of scratching over it; a burst of them (an edit) drags ghost snares into the kit. |
 | Tab | Bass root note (code indentation grooves). |
 | Code symbols `{}[]();` | Rim clicks; brackets add a quiet high 9th. Code sessions naturally sound percussive and sparse vs. prose. |
 | Paste | A pasted block of text = a rolled block chord. |
