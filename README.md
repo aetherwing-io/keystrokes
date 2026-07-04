@@ -1,5 +1,16 @@
 # keystrokes
 
+<p align="center">
+  <img src="assets/hero_banner.jpg" alt="Keystrokes Hero Banner" width="100%" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Music-Generative-ff69b4?style=for-the-badge" alt="Generative Music" />
+  <img src="https://img.shields.io/badge/Vibe-Lofi-blueviolet?style=for-the-badge" alt="Lofi Vibe" />
+  <img src="https://img.shields.io/badge/Category-Productivity-success?style=for-the-badge" alt="Productivity" />
+  <img src="https://img.shields.io/badge/Platform-Browser%20%7C%20macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge" alt="Cross-Platform" />
+</p>
+
 A lofi instrument for people who type. Keystrokes don't *choose* the music —
 they steer a generative lofi engine that is always in key, always on the grid.
 The typing supplies rhythm, contour, and energy; the music theory is baked in.
@@ -20,7 +31,8 @@ kept for the claude.ai artifact; the shared engine now lives in `engine/`.)
 
 ## Quick start (session soundtrack)
 
-One command — clones the repo and starts everything:
+> [!TIP]
+> **One command** — clones the repo and starts everything:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aetherwing-io/keystrokes/main/install.sh | sh
@@ -38,10 +50,11 @@ First run creates a python venv and installs `pynput`. The script starts the
 hub server, opens http://localhost:8123, and runs the key tap. Click **Start
 the tape** on the page, then go work anywhere. Ctrl-C stops everything.
 
-macOS will ask you to grant your terminal app the **Accessibility**
-permission (System Settings → Privacy & Security → Accessibility) the first
-time — the tap can't see keys without it, and notes will simply not play for
-typing outside the page until you grant it.
+> [!WARNING]
+> macOS will ask you to grant your terminal app the **Accessibility**
+> permission (System Settings → Privacy & Security → Accessibility) the first
+> time — the tap can't see keys without it, and notes will simply not play for
+> typing outside the page until you grant it.
 
 **Platform**: nothing here is macOS-only except the OS-native bits macOS
 provides. The hub (`server.mjs`, Node `fs.watch`) and the browser engine are
@@ -107,6 +120,10 @@ curl -s -XPOST localhost:8123/event -d '{"kind":"commit"}' >/dev/null 2>&1 || tr
 The "Telemetry" checkbox on the live page mutes all of it.
 
 ## The shelf — every session is a tape
+
+<p align="center">
+  <img src="assets/cassettes.jpg" alt="Session Tapes" width="80%" />
+</p>
 
 Sessions journal themselves automatically as **sound events** (never text,
 never keys): the local deck tapes to `~/.keystrokes/sessions/`, the website
@@ -250,8 +267,10 @@ the "sound" chip shows `sampled` or `synth`.
 
 ## Privacy notes
 
-- Everything binds to `127.0.0.1`; nothing is written to disk; keys become
-  notes and are discarded.
+> [!IMPORTANT]
+> - Everything binds to `127.0.0.1`; nothing is written to disk; keys become
+>   notes and are discarded.
+
 - macOS blocks event taps during secure input, so password fields are
   automatically silent to the tap.
 - Still: the key→note mapping is largely invertible. A *recording* of you
