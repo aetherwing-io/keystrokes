@@ -85,6 +85,7 @@ let buildAtBar = -1, chorusStartBar = -1, chorusUntilBar = -1, cooldownUntilBar 
 let outroAtBar = -1;
 const needsExplicitAudioTap = () =>
   typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+let unlockProbeAudio = null;
 
 /* the weave: the two melodic voices braid registers over time. Each voice
  * folds its notes toward a center; the centers mirror each other and cross
@@ -388,6 +389,7 @@ function voicingOf(chord) {
 
 /* ---------- init ---------- */
 function initAudio() {
+  if (ctx) return;
   engine = createAudioEngine(
     new (window.AudioContext || window.webkitAudioContext)(),
     { sampler, getStyle: () => STYLE, getCrackle: cracLevel });
@@ -445,14 +447,30 @@ function primeAudioGraph(audible = false) {
   } catch { /* unlock ping is optional */ }
 }
 
+function primeMediaElement(audible = false) {
+  if (!audible || typeof Audio === 'undefined') return Promise.resolve(false);
+  try {
+    unlockProbeAudio ??= new Audio('samples/rim.wav');
+    unlockProbeAudio.preload = 'auto';
+    unlockProbeAudio.playsInline = true;
+    unlockProbeAudio.volume = 0.22;
+    unlockProbeAudio.currentTime = 0;
+    return unlockProbeAudio.play().then(() => true).catch(() => false);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
 function requestAudioStart({ audible = false } = {}) {
   if (!ctx) return Promise.resolve(false);
-  primeAudioGraph(audible);
+  const mediaReady = primeMediaElement(audible);
+  primeAudioGraph(false);
   const resumed = ctx.state === 'running' || !ctx.resume
     ? Promise.resolve()
     : ctx.resume();
-  return resumed
+  return Promise.allSettled([resumed, mediaReady])
     .then(() => {
+      if (audible) primeAudioGraph(true);
       updateSoundChip();
       return ctx.state === 'running';
     })
@@ -1346,7 +1364,7 @@ function ensurePadRunning(musical) {
   const b = $('powerBtn');
   if (!started && b) {
     if (needsExplicitAudioTap()) {
-      b.textContent = 'Tap start';
+      b.textContent = 'Start';
       nudgePowerButton(b);
       return false;
     }
@@ -1489,11 +1507,20 @@ document.addEventListener('pointerdown', e => {
 
 /* ---------- controls ---------- */
 const powerBtn = $('powerBtn');
-if (powerBtn && needsExplicitAudioTap()) powerBtn.textContent = 'Start';
+let pendingStartAudio = null;
+if (powerBtn && needsExplicitAudioTap()) {
+  powerBtn.textContent = 'Start';
+  powerBtn.addEventListener('pointerdown', () => {
+    if (started) return;
+    if (!ctx) initAudio();
+    pendingStartAudio = requestAudioStart({ audible: true });
+  }, { passive: true });
+}
 if (powerBtn) powerBtn.addEventListener('click', async () => {
   if (!started) {
-    initAudio();
-    const audioReady = requestAudioStart({ audible: needsExplicitAudioTap() });
+    if (!ctx) initAudio();
+    const audioReady = pendingStartAudio || requestAudioStart({ audible: needsExplicitAudioTap() });
+    pendingStartAudio = null;
     startTransport();
     started = true;
     drainClaude();
